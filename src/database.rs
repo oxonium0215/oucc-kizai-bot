@@ -1,10 +1,10 @@
 use anyhow::Result;
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use tracing::info;
 
 pub async fn init(database_url: &str) -> Result<SqlitePool> {
     info!("Connecting to database: {}", database_url);
-    
+
     let pool = SqlitePoolOptions::new()
         .max_connections(10)
         .connect(database_url)
@@ -14,7 +14,7 @@ pub async fn init(database_url: &str) -> Result<SqlitePool> {
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&pool)
         .await?;
-    
+
     sqlx::query("PRAGMA journal_mode = WAL")
         .execute(&pool)
         .await?;

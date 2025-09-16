@@ -5,16 +5,16 @@ use serenity::prelude::*;
 
 pub async fn is_admin(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Result<bool> {
     let member = guild_id.member(ctx, user_id).await?;
-    
+
     // Check if user has administrator permission
     if let Ok(permissions) = member.permissions(ctx) {
         if permissions.administrator() {
             return Ok(true);
         }
     }
-    
+
     // TODO: Check custom admin roles from database
-    
+
     Ok(false)
 }
 

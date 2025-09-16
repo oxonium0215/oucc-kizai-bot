@@ -1,14 +1,14 @@
 use anyhow::Result;
 use serenity::all::{
-    CreateCommand, CreateInteractionResponse, CreateInteractionResponseMessage, 
-    CreateEmbed, CreateActionRow, CreateButton, ButtonStyle,
-    CommandInteraction, ComponentInteraction, Permissions, ChannelId
+    ButtonStyle, ChannelId, CommandInteraction, ComponentInteraction, CreateActionRow,
+    CreateButton, CreateCommand, CreateEmbed, CreateInteractionResponse,
+    CreateInteractionResponseMessage, Permissions,
 };
 use serenity::model::colour::Colour;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use sqlx::SqlitePool;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use crate::utils;
 
@@ -22,16 +22,16 @@ impl SetupCommand {
     }
 
     pub async fn handle(
-        ctx: &Context, 
-        interaction: &CommandInteraction, 
-        _db: &SqlitePool
+        ctx: &Context,
+        interaction: &CommandInteraction,
+        _db: &SqlitePool,
     ) -> Result<()> {
         // Check if user has admin permissions
         if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .content("❌ You need administrator permissions to use this command.")
-                    .ephemeral(true)
+                    .ephemeral(true),
             );
             interaction.create_response(&ctx.http, response).await?;
             return Ok(());
@@ -60,7 +60,7 @@ impl SetupCommand {
             CreateInteractionResponseMessage::new()
                 .embed(embed)
                 .components(vec![buttons])
-                .ephemeral(true)
+                .ephemeral(true),
         );
 
         interaction.create_response(&ctx.http, response).await?;
@@ -71,14 +71,14 @@ impl SetupCommand {
         ctx: &Context,
         interaction: &ComponentInteraction,
         db: &SqlitePool,
-        confirmed: bool
+        confirmed: bool,
     ) -> Result<()> {
         if !confirmed {
             let response = CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
                     .content("❌ Setup cancelled.")
                     .embeds(vec![])
-                    .components(vec![])
+                    .components(vec![]),
             );
             interaction.create_response(&ctx.http, response).await?;
             return Ok(());
@@ -119,7 +119,7 @@ impl SetupCommand {
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
                 .embed(embed)
-                .components(vec![])
+                .components(vec![]),
         );
 
         interaction.create_response(&ctx.http, response).await?;
@@ -127,14 +127,17 @@ impl SetupCommand {
         // Initialize channel with guide message or equipment embeds
         Self::initialize_channel(ctx, channel_id, db).await?;
 
-        info!("Setup completed for guild {} in channel {}", guild_id_i64, channel_id_i64);
+        info!(
+            "Setup completed for guild {} in channel {}",
+            guild_id_i64, channel_id_i64
+        );
         Ok(())
     }
 
     async fn initialize_channel(
         ctx: &Context,
         channel_id: ChannelId,
-        db: &SqlitePool
+        db: &SqlitePool,
     ) -> Result<()> {
         // Get guild ID from channel
         let channel = channel_id.to_channel(&ctx.http).await?;
@@ -146,12 +149,11 @@ impl SetupCommand {
         };
 
         // Check if there's any equipment in this guild
-        let equipment_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM equipment WHERE guild_id = ?"
-        )
-        .bind(guild_id)
-        .fetch_one(db)
-        .await?;
+        let equipment_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM equipment WHERE guild_id = ?")
+                .bind(guild_id)
+                .fetch_one(db)
+                .await?;
 
         if equipment_count == 0 {
             // Post guide message with Overall Management button
@@ -160,17 +162,18 @@ impl SetupCommand {
                 .description("Please register equipment to get started.")
                 .color(Colour::BLUE);
 
-            let buttons = CreateActionRow::Buttons(vec![
-                CreateButton::new("overall_management")
-                    .label("⚙️ Overall Management")
-                    .style(ButtonStyle::Primary),
-            ]);
+            let buttons = CreateActionRow::Buttons(vec![CreateButton::new("overall_management")
+                .label("⚙️ Overall Management")
+                .style(ButtonStyle::Primary)]);
 
-            let message = channel_id.send_message(&ctx.http, 
-                serenity::all::CreateMessage::new()
-                    .embed(embed)
-                    .components(vec![buttons])
-            ).await?;
+            let message = channel_id
+                .send_message(
+                    &ctx.http,
+                    serenity::all::CreateMessage::new()
+                        .embed(embed)
+                        .components(vec![buttons]),
+                )
+                .await?;
 
             // Save message reference
             sqlx::query(

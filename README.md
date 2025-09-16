@@ -233,13 +233,54 @@ The bot automatically synchronizes its managed messages on startup. If messages 
 - If hitting rate limits frequently, check for permission loops
 - Consider increasing delays in message update operations
 
+## Testing & Validation
+
+### End-to-End Validation
+This project includes comprehensive validation checklists to ensure all features work correctly:
+
+- **[End-to-End Validation Checklist](docs/e2e-validation-checklist.md)**: Complete validation procedures for all features
+- **[Quick Reference](docs/e2e-quick-reference.md)**: Condensed checklist for rapid validation
+
+Use these checklists:
+- Before major releases
+- After bug fixes 
+- During feature development
+- For periodic health checks
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run with output
+cargo test -- --nocapture
+
+# Test specific module
+cargo test test_name
+```
+
+### Code Quality
+
+```bash
+# Check formatting
+cargo fmt --check
+
+# Run linter
+cargo clippy -- -D warnings
+
+# Build project
+cargo build --release
+```
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests and linting
-5. Submit a pull request
+4. Run tests and linting (see Testing section above)
+5. Update validation checklists if adding new features
+6. Submit a pull request
 
 ## License
 

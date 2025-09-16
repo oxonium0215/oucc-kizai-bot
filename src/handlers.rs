@@ -1,9 +1,9 @@
+use anyhow::Result;
 use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use sqlx::SqlitePool;
-use tracing::{info, error};
-use anyhow::Result;
+use tracing::{error, info};
 
 use crate::commands::SetupCommand;
 
@@ -21,7 +21,7 @@ impl Handler {
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("{} is connected!", ready.user.name);
-        
+
         // Register slash commands globally
         if let Err(e) = self.register_commands(&ctx).await {
             error!("Failed to register commands: {}", e);
@@ -30,7 +30,7 @@ impl EventHandler for Handler {
 
     async fn guild_create(&self, _ctx: Context, guild: Guild, _is_new: Option<bool>) {
         info!("Joined guild: {} ({})", guild.name, guild.id);
-        
+
         // Initialize guild in database if not exists
         if let Err(e) = self.ensure_guild_exists(guild.id.get() as i64).await {
             error!("Failed to initialize guild {}: {}", guild.id, e);
@@ -75,7 +75,10 @@ impl EventHandler for Handler {
 
             if is_reservation_channel.is_some() {
                 if let Err(e) = msg.delete(&ctx.http).await {
-                    error!("Failed to delete user message in reservation channel: {}", e);
+                    error!(
+                        "Failed to delete user message in reservation channel: {}",
+                        e
+                    );
                 }
             }
         }
@@ -84,9 +87,7 @@ impl EventHandler for Handler {
 
 impl Handler {
     async fn register_commands(&self, ctx: &Context) -> Result<()> {
-        let commands = vec![
-            SetupCommand::register(),
-        ];
+        let commands = vec![SetupCommand::register()];
 
         serenity::all::Command::set_global_commands(&ctx.http, commands).await?;
         info!("Registered global slash commands");
@@ -94,13 +95,11 @@ impl Handler {
     }
 
     async fn ensure_guild_exists(&self, guild_id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO guilds (id) VALUES (?)"
-        )
-        .bind(guild_id)
-        .execute(&self.db)
-        .await?;
-        
+        sqlx::query("INSERT OR IGNORE INTO guilds (id) VALUES (?)")
+            .bind(guild_id)
+            .execute(&self.db)
+            .await?;
+
         Ok(())
     }
 
@@ -114,7 +113,11 @@ impl Handler {
         Ok(())
     }
 
-    async fn handle_component(&self, ctx: &Context, interaction: &ComponentInteraction) -> Result<()> {
+    async fn handle_component(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
         match interaction.data.custom_id.as_str() {
             "setup_confirm" => {
                 SetupCommand::handle_confirmation(ctx, interaction, &self.db, true).await?
@@ -127,12 +130,15 @@ impl Handler {
                 let response = serenity::all::CreateInteractionResponse::Message(
                     serenity::all::CreateInteractionResponseMessage::new()
                         .content("🚧 Overall Management UI coming soon!")
-                        .ephemeral(true)
+                        .ephemeral(true),
                 );
                 interaction.create_response(&ctx.http, response).await?;
             }
             _ => {
-                error!("Unknown component interaction: {}", interaction.data.custom_id);
+                error!(
+                    "Unknown component interaction: {}",
+                    interaction.data.custom_id
+                );
             }
         }
         Ok(())
