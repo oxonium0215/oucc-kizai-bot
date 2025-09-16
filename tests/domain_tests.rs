@@ -300,12 +300,17 @@ async fn test_return_correction_window() {
     let current_time = return_time + Duration::minutes(61);
     assert!(!is_within_return_correction_window(return_time, None, current_time));
     
-    // Case 2: With next reservation - 15 minutes before next is the limit
-    let next_reservation = return_time + hour * 2;
-    let current_time = next_reservation - Duration::minutes(10); // Too close to next
+    // Case 2: With next reservation - 15 minutes before next is the limit, but 1h window still applies
+    let next_reservation = return_time + hour * 2; // 2 hours later
+    let current_time = next_reservation - Duration::minutes(10); // Too close to next (10 min before)
     assert!(!is_within_return_correction_window(return_time, Some(next_reservation), current_time));
     
-    let current_time = next_reservation - Duration::minutes(20); // Safe
+    // This should fail because we're past the 1-hour window (100 min after return)
+    let current_time = next_reservation - Duration::minutes(20); // 20 min before next = 100 min after return
+    assert!(!is_within_return_correction_window(return_time, Some(next_reservation), current_time));
+    
+    // This should pass because we're within 1 hour and safe from next reservation
+    let current_time = return_time + Duration::minutes(50); // 50 min after return, 70 min before next
     assert!(is_within_return_correction_window(return_time, Some(next_reservation), current_time));
     
     // Case 3: Next reservation is very close (less than 1 hour)
