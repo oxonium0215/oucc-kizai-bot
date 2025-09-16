@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  oucc-kizai-bot:
+    build: .
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DATABASE_URL=sqlite:/data/bot.db
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # No ports needed as this is a Discord bot

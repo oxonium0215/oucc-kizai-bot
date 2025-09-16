@@ -3,6 +3,14 @@ name = "oucc-kizai-bot"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "oucc_kizai_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oucc-kizai-bot"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 serenity = { version = "0.12", default-features = false, features = [

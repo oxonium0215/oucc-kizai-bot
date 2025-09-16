@@ -8,11 +8,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod config;
 mod database;
 mod handlers;
-mod time;
+pub mod time;
 mod models;
 mod commands;
 mod jobs;
-mod utils;
+pub mod utils;
 
 use config::Config;
 use handlers::Handler;
