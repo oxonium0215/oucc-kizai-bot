@@ -6,6 +6,8 @@ use sqlx::SqlitePool;
 use tracing::{error, info};
 
 use crate::commands::SetupCommand;
+use crate::utils;
+use crate::equipment::EquipmentRenderer;
 
 pub struct Handler {
     db: SqlitePool,
@@ -47,6 +49,11 @@ impl EventHandler for Handler {
             Interaction::Component(component_interaction) => {
                 if let Err(e) = self.handle_component(&ctx, &component_interaction).await {
                     error!("Error handling component: {}", e);
+                }
+            }
+            Interaction::Modal(modal_interaction) => {
+                if let Err(e) = self.handle_modal(&ctx, &modal_interaction).await {
+                    error!("Error handling modal: {}", e);
                 }
             }
             _ => {}
@@ -126,13 +133,19 @@ impl Handler {
                 SetupCommand::handle_confirmation(ctx, interaction, &self.db, false).await?
             }
             "overall_management" => {
-                // TODO: Implement overall management UI
-                let response = serenity::all::CreateInteractionResponse::Message(
-                    serenity::all::CreateInteractionResponseMessage::new()
-                        .content("🚧 Overall Management UI coming soon!")
-                        .ephemeral(true),
-                );
-                interaction.create_response(&ctx.http, response).await?;
+                self.handle_overall_management(ctx, interaction).await?
+            }
+            "mgmt_add_tag" => {
+                self.handle_add_tag(ctx, interaction).await?
+            }
+            "mgmt_add_location" => {
+                self.handle_add_location(ctx, interaction).await?
+            }
+            "mgmt_add_equipment" => {
+                self.handle_add_equipment(ctx, interaction).await?
+            }
+            "mgmt_refresh_display" => {
+                self.handle_refresh_display(ctx, interaction).await?
             }
             _ => {
                 error!(
@@ -141,6 +154,473 @@ impl Handler {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn handle_overall_management(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Create management panel with buttons
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let embed = CreateEmbed::new()
+            .title("⚙️ Overall Management")
+            .description("Equipment and organization management panel")
+            .color(Colour::BLUE);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("mgmt_add_tag")
+                .label("🏷️ Add Tag")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_add_location")
+                .label("📍 Add Location")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_add_equipment")
+                .label("📦 Add Equipment")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_refresh_display")
+                .label("🔄 Refresh Display")
+                .style(ButtonStyle::Primary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons])
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_add_tag(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Create modal for adding tag
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new("add_tag_modal", "Add New Tag")
+            .components(vec![
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "name", "Tag Name")
+                        .placeholder("e.g., Cameras, Audio, Lighting")
+                        .required(true)
+                        .max_length(50)
+                ),
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "sort_order", "Sort Order")
+                        .placeholder("Number for ordering (e.g., 1, 2, 3...)")
+                        .required(true)
+                        .max_length(10)
+                ),
+            ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_add_location(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Create modal for adding location
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new("add_location_modal", "Add New Location")
+            .components(vec![
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "name", "Location Name")
+                        .placeholder("e.g., Office A, Lab B, Storage Room")
+                        .required(true)
+                        .max_length(100)
+                ),
+            ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_add_equipment(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // TODO: For now, show a simple modal. In a full implementation, we'd use select menus for tags and locations
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new("add_equipment_modal", "Add New Equipment")
+            .components(vec![
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "name", "Equipment Name")
+                        .placeholder("e.g., Sony A7III, Shure SM58")
+                        .required(true)
+                        .max_length(100)
+                ),
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "tag_name", "Tag Name")
+                        .placeholder("Enter existing tag name (optional)")
+                        .required(false)
+                        .max_length(50)
+                ),
+                serenity::all::CreateActionRow::InputText(
+                    CreateInputText::new(InputTextStyle::Short, "location", "Default Return Location")
+                        .placeholder("Enter location name (optional)")
+                        .required(false)
+                        .max_length(100)
+                ),
+            ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_refresh_display(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let channel_id = interaction.channel_id.get() as i64;
+
+        // Use equipment renderer to refresh the display
+        let renderer = EquipmentRenderer::new(self.db.clone());
+        match renderer.reconcile_equipment_display(ctx, guild_id, channel_id).await {
+            Ok(()) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("✅ Equipment display refreshed successfully!")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(e) => {
+                error!("Failed to refresh equipment display: {}", e);
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Failed to refresh equipment display. Check logs for details.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        match interaction.data.custom_id.as_str() {
+            "add_tag_modal" => {
+                self.handle_add_tag_modal(ctx, interaction).await?
+            }
+            "add_location_modal" => {
+                self.handle_add_location_modal(ctx, interaction).await?
+            }
+            "add_equipment_modal" => {
+                self.handle_add_equipment_modal(ctx, interaction).await?
+            }
+            _ => {
+                error!("Unknown modal interaction: {}", interaction.data.custom_id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_add_tag_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract data from modal - access components correctly
+        let mut name = String::new();
+        let mut sort_order_str = String::new();
+        
+        for row in &interaction.data.components {
+            for component in &row.components {
+                match component.custom_id.as_str() {
+                    "name" => name = component.value.clone(),
+                    "sort_order" => sort_order_str = component.value.clone(),
+                    _ => {}
+                }
+            }
+        }
+
+        // Validate inputs
+        if name.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Tag name is required.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let sort_order: i64 = match sort_order_str.parse() {
+            Ok(num) => num,
+            Err(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Sort order must be a number.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Insert tag into database
+        match sqlx::query(
+            "INSERT INTO tags (guild_id, name, sort_order) VALUES (?, ?, ?)"
+        )
+        .bind(guild_id)
+        .bind(&name)
+        .bind(sort_order)
+        .execute(&self.db)
+        .await
+        {
+            Ok(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ Tag '{}' added successfully! Use 'Refresh Display' to update the equipment list.", name))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(e) => {
+                error!("Failed to insert tag: {}", e);
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Failed to add tag. It might already exist.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_add_location_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract data from modal
+        let mut name = String::new();
+        
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if component.custom_id == "name" {
+                    name = component.value.clone();
+                }
+            }
+        }
+
+        // Validate inputs
+        if name.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Location name is required.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Insert location into database
+        match sqlx::query(
+            "INSERT INTO locations (guild_id, name) VALUES (?, ?)"
+        )
+        .bind(guild_id)
+        .bind(&name)
+        .execute(&self.db)
+        .await
+        {
+            Ok(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ Location '{}' added successfully!", name))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(e) => {
+                error!("Failed to insert location: {}", e);
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Failed to add location. It might already exist.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_add_equipment_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract data from modal
+        let mut name = String::new();
+        let mut tag_name = Option::<String>::None;
+        let mut location = Option::<String>::None;
+        
+        for row in &interaction.data.components {
+            for component in &row.components {
+                match component.custom_id.as_str() {
+                    "name" => name = component.value.clone(),
+                    "tag_name" => {
+                        if !component.value.is_empty() {
+                            tag_name = Some(component.value.clone());
+                        }
+                    },
+                    "location" => {
+                        if !component.value.is_empty() {
+                            location = Some(component.value.clone());
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        // Validate inputs
+        if name.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Equipment name is required.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Look up tag ID if tag name provided
+        let tag_id = if let Some(ref tag_name_val) = tag_name {
+            sqlx::query_scalar(
+                "SELECT id FROM tags WHERE guild_id = ? AND name = ?"
+            )
+            .bind(guild_id)
+            .bind(tag_name_val)
+            .fetch_optional(&self.db)
+            .await?
+        } else {
+            None
+        };
+
+        // Insert equipment into database
+        match sqlx::query(
+            "INSERT INTO equipment (guild_id, tag_id, name, status, default_return_location) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(guild_id)
+        .bind(tag_id)
+        .bind(&name)
+        .bind("Available")
+        .bind(&location)
+        .execute(&self.db)
+        .await
+        {
+            Ok(_) => {
+                let mut response_text = format!("✅ Equipment '{}' added successfully!", name);
+                if tag_name.is_some() && tag_id.is_none() {
+                    response_text.push_str(" (Note: Tag not found, equipment added without tag)");
+                }
+                response_text.push_str(" Use 'Refresh Display' to update the equipment list.");
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(response_text)
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(e) => {
+                error!("Failed to insert equipment: {}", e);
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Failed to add equipment. It might already exist.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
         Ok(())
     }
 }

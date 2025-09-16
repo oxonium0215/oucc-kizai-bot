@@ -4,3 +4,4 @@ pub mod utils;
 pub mod traits;
 pub mod models;
 pub mod database;
+pub mod equipment;

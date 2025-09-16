@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT \n                e.id, e.guild_id, e.tag_id, e.name, e.status, e.current_location, \n                e.unavailable_reason, e.default_return_location, e.message_id, \n                e.created_at, e.updated_at,\n                t.id as tag_id_full, t.guild_id as tag_guild_id, t.name as tag_name, \n                t.sort_order, t.created_at as tag_created_at\n             FROM equipment e\n             LEFT JOIN tags t ON e.tag_id = t.id\n             WHERE e.guild_id = ?\n             ORDER BY COALESCE(t.sort_order, 999999) ASC, e.name ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "guild_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "tag_id",
+        "ordinal": 2,
+        "type_info": "Int64"
+      },
+      {
+        "name": "name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "current_location",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "unavailable_reason",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "default_return_location",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "message_id",
+        "ordinal": 8,
+        "type_info": "Int64"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "tag_id_full",
+        "ordinal": 11,
+        "type_info": "Int64"
+      },
+      {
+        "name": "tag_guild_id",
+        "ordinal": 12,
+        "type_info": "Int64"
+      },
+      {
+        "name": "tag_name",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 14,
+        "type_info": "Int64"
+      },
+      {
+        "name": "tag_created_at",
+        "ordinal": 15,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "da97bf8230f37f0e3a995b39899deb24fdd8f7a3b8532edd86a7f908d5c4a060"
+}

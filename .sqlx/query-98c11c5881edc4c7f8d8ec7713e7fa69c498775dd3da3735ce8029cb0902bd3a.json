@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM managed_messages \n             WHERE guild_id = ? AND channel_id = ? AND message_type = 'EquipmentEmbed'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "98c11c5881edc4c7f8d8ec7713e7fa69c498775dd3da3735ce8029cb0902bd3a"
+}

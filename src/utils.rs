@@ -5,10 +5,12 @@ use serenity::prelude::*;
 
 pub async fn is_admin(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Result<bool> {
     let member = guild_id.member(ctx, user_id).await?;
-
-    // Check if user has administrator permission
-    if let Ok(permissions) = member.permissions(ctx) {
-        if permissions.administrator() {
+    
+    // Check if user has administrator permission in any context
+    // Since we don't have a specific channel, we use the base guild permissions
+    if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
+        let base_permissions = guild.member_permissions(&member);
+        if base_permissions.administrator() {
             return Ok(true);
         }
     }

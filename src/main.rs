@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod commands;
 mod config;
 mod database;
+mod equipment;
 mod handlers;
 mod jobs;
 mod models;
@@ -36,6 +37,12 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config = Config::from_env()?;
+
+    // Ensure data directory exists for default SQLite database
+    if config.database_url.starts_with("sqlite://./data/") {
+        std::fs::create_dir_all("./data")?;
+        info!("Created data directory for SQLite database");
+    }
 
     // Initialize database
     let db = database::init(&config.database_url).await?;

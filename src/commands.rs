@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 use tracing::{error, info, warn};
 
 use crate::utils;
+use crate::equipment::EquipmentRenderer;
 
 pub struct SetupCommand;
 
@@ -186,8 +187,14 @@ impl SetupCommand {
             .execute(db)
             .await?;
         } else {
-            // TODO: Create equipment embeds
-            warn!("Equipment embed creation not yet implemented");
+            // Create equipment embeds using the renderer
+            let renderer = EquipmentRenderer::new(db.clone());
+            
+            // Clean up any duplicate guide messages first
+            renderer.cleanup_duplicate_guides(ctx, guild_id, channel_id.get() as i64).await?;
+            
+            // Render equipment display
+            renderer.reconcile_equipment_display(ctx, guild_id, channel_id.get() as i64).await?;
         }
 
         Ok(())
