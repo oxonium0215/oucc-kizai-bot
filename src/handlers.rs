@@ -399,16 +399,19 @@ impl Handler {
     ) -> Result<()> {
         let guild_id = interaction.guild_id.unwrap().get() as i64;
         
-        // Extract data from modal - access components correctly
+        // Extract data from modal - access components correctly for Serenity modal structure
         let mut name = String::new();
         let mut sort_order_str = String::new();
         
         for row in &interaction.data.components {
             for component in &row.components {
-                match component.custom_id.as_str() {
-                    "name" => name = component.value.clone(),
-                    "sort_order" => sort_order_str = component.value.clone(),
-                    _ => {}
+                // ActionRowComponent is an enum, match on it properly
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    match input_text.custom_id.as_str() {
+                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "sort_order" => sort_order_str = input_text.value.clone().unwrap_or_default(),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -481,8 +484,10 @@ impl Handler {
         
         for row in &interaction.data.components {
             for component in &row.components {
-                if component.custom_id == "name" {
-                    name = component.value.clone();
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "name" {
+                        name = input_text.value.clone().unwrap_or_default();
+                    }
                 }
             }
         }
@@ -543,19 +548,25 @@ impl Handler {
         
         for row in &interaction.data.components {
             for component in &row.components {
-                match component.custom_id.as_str() {
-                    "name" => name = component.value.clone(),
-                    "tag_name" => {
-                        if !component.value.is_empty() {
-                            tag_name = Some(component.value.clone());
-                        }
-                    },
-                    "location" => {
-                        if !component.value.is_empty() {
-                            location = Some(component.value.clone());
-                        }
-                    },
-                    _ => {}
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    match input_text.custom_id.as_str() {
+                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "tag_name" => {
+                            if let Some(value) = &input_text.value {
+                                if !value.is_empty() {
+                                    tag_name = Some(value.clone());
+                                }
+                            }
+                        },
+                        "location" => {
+                            if let Some(value) = &input_text.value {
+                                if !value.is_empty() {
+                                    location = Some(value.clone());
+                                }
+                            }
+                        },
+                        _ => {}
+                    }
                 }
             }
         }
@@ -572,7 +583,7 @@ impl Handler {
         }
 
         // Look up tag ID if tag name provided
-        let tag_id = if let Some(ref tag_name_val) = tag_name {
+        let tag_id: Option<i64> = if let Some(ref tag_name_val) = tag_name {
             sqlx::query_scalar(
                 "SELECT id FROM tags WHERE guild_id = ? AND name = ?"
             )

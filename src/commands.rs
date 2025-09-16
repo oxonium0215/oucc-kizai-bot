@@ -8,7 +8,7 @@ use serenity::model::colour::Colour;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use sqlx::SqlitePool;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::utils;
 use crate::equipment::EquipmentRenderer;

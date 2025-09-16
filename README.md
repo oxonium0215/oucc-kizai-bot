@@ -42,8 +42,8 @@ Create a `.env` file (for local development) or set these environment variables:
 DISCORD_BOT_TOKEN=your_bot_token_here
 
 # Optional
-DATABASE_URL=sqlite:./bot.db  # Default: sqlite:./bot.db
-LOG_LEVEL=info               # Default: info
+DATABASE_URL=sqlite://./data/bot.db  # Default: sqlite://./data/bot.db (note the data directory)
+LOG_LEVEL=info                       # Default: info
 ```
 
 ### Running Locally
@@ -61,8 +61,11 @@ LOG_LEVEL=info               # Default: info
    cargo build --release
    ```
 
-3. **Run migrations**:
+3. **Prepare data directory and run migrations**:
    ```bash
+   # Create data directory for SQLite database
+   mkdir -p data
+   
    # Install sqlx-cli if not already installed
    cargo install sqlx-cli --no-default-features --features sqlite
    
@@ -121,9 +124,12 @@ LOG_LEVEL=info               # Default: info
 ### Equipment Management
 
 - **Add Equipment**: Use Overall Management → Add Equipment
-- **Configure Tags**: Organize equipment with custom tags
+- **Configure Tags**: Organize equipment with custom tags (use sort order numbers for grouping)
 - **Set Locations**: Define lending and return locations
+- **Refresh Display**: Update equipment embeds after making changes
 - **Manage Reservations**: Users can create, modify, and cancel reservations
+
+**Note**: Only users with administrator permissions or configured admin roles can access Overall Management features.
 
 ### User Operations
 
