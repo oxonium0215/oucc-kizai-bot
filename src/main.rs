@@ -13,6 +13,7 @@ mod jobs;
 mod models;
 pub mod time;
 pub mod utils;
+pub mod traits;
 
 use config::Config;
 use handlers::Handler;
