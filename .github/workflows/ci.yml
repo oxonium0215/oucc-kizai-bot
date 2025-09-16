@@ -55,6 +55,11 @@ jobs:
       env:
         DATABASE_URL: sqlite::memory:
 
+    - name: Run domain tests  
+      run: cargo test --test time_tests --test domain_tests
+      env:
+        DATABASE_URL: sqlite:test.db
+
     - name: Check sqlx migrations
       run: |
         # Create a test database
