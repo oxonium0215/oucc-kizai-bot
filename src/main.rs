@@ -9,10 +9,12 @@ mod config;
 mod database;
 mod handlers;
 pub mod time;
-mod models;
+pub mod models;
+pub mod jobs;
 mod commands;
-mod jobs;
 pub mod utils;
+mod performance;
+mod load_testing;
 
 use config::Config;
 use handlers::Handler;

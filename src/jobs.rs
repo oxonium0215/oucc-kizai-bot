@@ -6,14 +6,17 @@ use tokio::time::sleep;
 use tracing::{info, error, warn};
 
 use crate::models::Job;
+use crate::performance::{MessageUpdateManager, MetricsCollector};
 
 pub struct JobWorker {
     db: SqlitePool,
+    metrics_collector: MetricsCollector,
 }
 
 impl JobWorker {
     pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+        let metrics_collector = MetricsCollector::new(db.clone());
+        Self { db, metrics_collector }
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -65,6 +68,8 @@ impl JobWorker {
             "reminder" => self.process_reminder(job).await?,
             "transfer_timeout" => self.process_transfer_timeout(job).await?,
             "retry_dm" => self.process_retry_dm(job).await?,
+            "batch_message_update" => self.process_batch_message_update(job).await?,
+            "performance_metrics" => self.process_performance_metrics(job).await?,
             _ => {
                 warn!("Unknown job type: {}", job.job_type);
             }
@@ -83,16 +88,42 @@ impl JobWorker {
 
     async fn process_reminder(&self, _job: &Job) -> Result<()> {
         // TODO: Implement reminder processing
+        info!("Processing reminder job");
         Ok(())
     }
 
     async fn process_transfer_timeout(&self, _job: &Job) -> Result<()> {
         // TODO: Implement transfer timeout processing
+        info!("Processing transfer timeout job");
         Ok(())
     }
 
     async fn process_retry_dm(&self, _job: &Job) -> Result<()> {
         // TODO: Implement DM retry processing
+        info!("Processing DM retry job");
+        Ok(())
+    }
+
+    async fn process_batch_message_update(&self, job: &Job) -> Result<()> {
+        info!("Processing batch message update job");
+        
+        // Parse the job payload to get message update details
+        let payload: serde_json::Value = serde_json::from_str(&job.payload)?;
+        
+        // For now, just log the job - in a full implementation, this would
+        // coordinate with the MessageUpdateManager
+        info!("Batch message update payload: {}", payload);
+        
+        Ok(())
+    }
+
+    async fn process_performance_metrics(&self, _job: &Job) -> Result<()> {
+        info!("Processing performance metrics collection job");
+        
+        // Store current metrics to database
+        self.metrics_collector.store_metrics().await?;
+        
+        info!("Performance metrics stored successfully");
         Ok(())
     }
 
@@ -122,6 +153,48 @@ impl JobWorker {
             .await?;
         }
         
+        Ok(())
+    }
+
+    /// Schedule a performance metrics collection job
+    pub async fn schedule_metrics_collection(&self) -> Result<()> {
+        let scheduled_time = Utc::now() + chrono::Duration::minutes(5);
+        
+        sqlx::query(
+            "INSERT INTO jobs (job_type, payload, scheduled_for, max_attempts) VALUES (?, ?, ?, ?)"
+        )
+        .bind("performance_metrics")
+        .bind("{}")
+        .bind(scheduled_time)
+        .bind(3)
+        .execute(&self.db)
+        .await?;
+
+        info!("Scheduled performance metrics collection job");
+        Ok(())
+    }
+
+    /// Schedule batch message updates with priority and batching
+    pub async fn schedule_batch_message_update(&self, guild_id: i64, priority: &str) -> Result<()> {
+        let payload = serde_json::json!({
+            "guild_id": guild_id,
+            "priority": priority,
+            "batch_size": 10
+        });
+        
+        let scheduled_time = Utc::now() + chrono::Duration::seconds(5);
+        
+        sqlx::query(
+            "INSERT INTO jobs (job_type, payload, scheduled_for, max_attempts) VALUES (?, ?, ?, ?)"
+        )
+        .bind("batch_message_update")
+        .bind(payload.to_string())
+        .bind(scheduled_time)
+        .bind(3)
+        .execute(&self.db)
+        .await?;
+
+        info!("Scheduled batch message update job for guild {}", guild_id);
         Ok(())
     }
 }

@@ -1217,6 +1217,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dotenv",
+ "rand",
  "serde",
  "serde_json",
  "serenity",
