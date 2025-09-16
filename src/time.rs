@@ -26,12 +26,18 @@ pub fn now_jst_string() -> String {
 }
 
 /// Parse JST date/time and convert to UTC
-pub fn jst_to_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<DateTime<Utc>> {
+pub fn jst_to_utc(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+) -> Option<DateTime<Utc>> {
     let jst_naive = chrono::NaiveDate::from_ymd_opt(year, month, day)
         .and_then(|d| d.and_hms_opt(hour, minute, 0))?;
-    
+
     let jst_time = Tokyo.from_local_datetime(&jst_naive).single()?;
-    
+
     Some(jst_time.with_timezone(&Utc))
 }
 

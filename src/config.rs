@@ -13,11 +13,10 @@ impl Config {
         let discord_token = env::var("DISCORD_BOT_TOKEN")
             .map_err(|_| anyhow!("DISCORD_BOT_TOKEN environment variable is required"))?;
 
-        let database_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite:./bot.db".to_string());
+        let database_url =
+            env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./bot.db".to_string());
 
-        let log_level = env::var("LOG_LEVEL")
-            .unwrap_or_else(|_| "info".to_string());
+        let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
 
         Ok(Self {
             discord_token,

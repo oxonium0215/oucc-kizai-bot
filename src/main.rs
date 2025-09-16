@@ -5,13 +5,13 @@ use std::env;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod commands;
 mod config;
 mod database;
 mod handlers;
-pub mod time;
-mod models;
-mod commands;
 mod jobs;
+mod models;
+pub mod time;
 pub mod utils;
 
 use config::Config;
@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
 
     // Initialize database
     let db = database::init(&config.database_url).await?;
-    
+
     // Run migrations
     sqlx::migrate!("./migrations").run(&db).await?;
     info!("Database migrations completed");
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
 
     // Start the bot
     info!("Starting Discord client");
-    
+
     // Handle shutdown gracefully
     tokio::select! {
         result = client.start() => {
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
 
     // Stop the job worker
     worker_handle.abort();
-    
+
     info!("Bot shutting down");
     Ok(())
 }

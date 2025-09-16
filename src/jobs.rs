@@ -3,7 +3,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use crate::models::Job;
 
@@ -18,19 +18,19 @@ impl JobWorker {
 
     pub async fn run(&self) -> Result<()> {
         info!("Starting job worker");
-        
+
         loop {
             if let Err(e) = self.process_jobs().await {
                 error!("Error processing jobs: {}", e);
             }
-            
+
             sleep(Duration::from_secs(30)).await;
         }
     }
 
     async fn process_jobs(&self) -> Result<()> {
         let now = Utc::now();
-        
+
         // Get pending jobs that are due
         let jobs: Vec<Job> = sqlx::query_as::<_, Job>(
             "SELECT * FROM jobs WHERE status = 'Pending' AND scheduled_for <= ? ORDER BY scheduled_for LIMIT 10"
@@ -51,10 +51,10 @@ impl JobWorker {
 
     async fn process_job(&self, job: &Job) -> Result<()> {
         info!("Processing job {} of type {}", job.id, job.job_type);
-        
+
         // Mark job as running
         sqlx::query(
-            "UPDATE jobs SET status = 'Running', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            "UPDATE jobs SET status = 'Running', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         )
         .bind(job.id)
         .execute(&self.db)
@@ -72,7 +72,7 @@ impl JobWorker {
 
         // Mark job as completed
         sqlx::query(
-            "UPDATE jobs SET status = 'Completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            "UPDATE jobs SET status = 'Completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         )
         .bind(job.id)
         .execute(&self.db)
@@ -98,7 +98,7 @@ impl JobWorker {
 
     async fn mark_job_failed(&self, job: &Job) -> Result<()> {
         let new_attempts = job.attempts + 1;
-        
+
         if new_attempts >= job.max_attempts {
             sqlx::query(
                 "UPDATE jobs SET status = 'Failed', attempts = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -111,7 +111,7 @@ impl JobWorker {
             // Reschedule for retry
             let retry_delay = Duration::from_secs(300); // 5 minutes
             let new_scheduled_for = Utc::now() + chrono::Duration::from_std(retry_delay)?;
-            
+
             sqlx::query(
                 "UPDATE jobs SET status = 'Pending', attempts = ?, scheduled_for = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             )
@@ -121,7 +121,7 @@ impl JobWorker {
             .execute(&self.db)
             .await?;
         }
-        
+
         Ok(())
     }
 }
