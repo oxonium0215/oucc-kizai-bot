@@ -152,18 +152,78 @@ migrations/           # Database migrations
 .github/workflows/    # CI/CD pipeline
 ```
 
-### Running Tests
+## Testing
+
+This project includes a comprehensive automated test suite that validates core domain logic and end-to-end workflows using mocked Discord interactions.
+
+### Test Categories
+
+**1. Unit Tests**
+- Time conversion (UTC↔JST) with DST edge cases
+- Reservation overlap detection and conflict resolution  
+- Return correction window validation
+- Transfer state machine transitions
+- Equipment ordering (tag.sort_order + name)
+
+**2. Integration Tests**
+- Concurrent reservation attempts with atomic conflict detection
+- Transfer timeout jobs with deterministic time advancement
+- Return flow with location confirmation and correction windows
+- Notification reminders (pre-end and return delay)
+- DM failure fallback testing
+
+**3. End-to-End Tests**
+- Complete equipment lending lifecycle simulation
+- Setup → add tags/locations/equipment → reservation → transfer → return
+- Message self-healing on restart simulation
+- JST formatting validation in all user-facing notifications
+
+### Running the Test Suite
 
 ```bash
+# Install SQLx CLI (if not already installed)
+cargo install sqlx-cli --no-default-features --features sqlite
+
+# Prepare test database and query cache
+export DATABASE_URL=sqlite:test.db
+touch test.db
+sqlx migrate run
+cargo sqlx prepare
+
 # Run all tests
 cargo test
 
-# Run tests with output
+# Run specific test categories
+cargo test --test time_tests      # Time conversion tests
+cargo test --test domain_tests    # Domain logic tests
+cargo test --test transfer_tests  # Transfer state machine tests  
+cargo test --test job_tests       # Job processing tests
+cargo test --test e2e_happy_path  # End-to-end workflow tests
+
+# Run with output
 cargo test -- --nocapture
 
 # Run specific test
-cargo test test_name
+cargo test test_utc_to_jst_conversion
 ```
+
+### Test Features
+
+- **Deterministic Time**: `TestClock` allows precise time control for testing time-dependent logic
+- **Mock Discord API**: `MockDiscordApi` captures all Discord interactions without requiring live Discord
+- **Isolated Database**: Each test uses a fresh SQLite database with full schema migrations
+- **Concurrent Testing**: Validates proper handling of race conditions and database transactions
+- **Japanese Localization**: Ensures all user-facing times are displayed in JST format
+
+### Continuous Integration
+
+The CI pipeline automatically:
+- Runs the full test suite on every commit
+- Validates SQLx migrations and compile-time query checking
+- Performs code formatting and linting checks
+- Ensures offline compilation compatibility
+
+Tests are designed to be fast, reliable, and maintainable without external dependencies.
 
 ### Code Quality
 

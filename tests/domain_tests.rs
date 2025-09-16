@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use oucc_kizai_bot::models::*;
-use sqlx::{SqlitePool, Executor};
+use sqlx::Executor;
 
 mod common;
 
@@ -28,9 +28,9 @@ pub async fn check_reservation_conflict<'e, E>(
 where
     E: Executor<'e, Database = sqlx::Sqlite>,
 {
-    let query = if let Some(exclude_id) = exclude_reservation_id {
-        sqlx::query!(
-            "SELECT COUNT(*) as count FROM reservations 
+    let count = if let Some(exclude_id) = exclude_reservation_id {
+        sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM reservations 
              WHERE equipment_id = ? AND status = 'Confirmed' 
              AND id != ? AND start_time < ? AND end_time > ?",
             equipment_id,
@@ -38,19 +38,22 @@ where
             end_time,
             start_time
         )
+        .fetch_one(db)
+        .await?
     } else {
-        sqlx::query!(
-            "SELECT COUNT(*) as count FROM reservations 
+        sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM reservations 
              WHERE equipment_id = ? AND status = 'Confirmed' 
              AND start_time < ? AND end_time > ?",
             equipment_id,
             end_time,
             start_time
         )
+        .fetch_one(db)
+        .await?
     };
     
-    let result = query.fetch_one(db).await?;
-    Ok(result.count > 0)
+    Ok(count > 0)
 }
 
 /// Calculate return correction window
