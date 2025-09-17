@@ -1647,7 +1647,7 @@ impl Handler {
         };
 
         // Get guild context for quota validation
-        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id = interaction.guild_id.ok_or_else(|| anyhow::anyhow!("Missing guild context"))?;
         let guild_id_i64 = guild_id.get() as i64;
         
         // Get user roles for quota validation
@@ -1860,7 +1860,7 @@ impl Handler {
         };
 
         // Get guild context for quota validation
-        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id = interaction.guild_id.ok_or_else(|| anyhow::anyhow!("Missing guild context"))?;
         let guild_id_i64 = guild_id.get() as i64;
         
         // Get user roles for quota validation
@@ -2188,30 +2188,6 @@ impl Handler {
             ));
         }
 
-        // Check for conflicts with maintenance windows
-        let maintenance_conflicts = sqlx::query!(
-            "SELECT id, start_utc, end_utc, reason FROM maintenance_windows 
-             WHERE equipment_id = ? AND canceled_at_utc IS NULL
-             AND start_utc < ? AND end_utc > ?",
-            equipment_id,
-            end_time,
-            start_time
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
-
-        if !maintenance_conflicts.is_empty() {
-            let maintenance = &maintenance_conflicts[0];
-            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.start_utc));
-            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.end_utc));
-            let reason_text = maintenance.reason.as_deref().unwrap_or("Equipment maintenance");
-            return Err(format!(
-                "Reservation conflicts with scheduled maintenance ({}) from {} to {}. Please choose a different time.",
-                reason_text, start_jst, end_jst
-            ));
-        }
-
         // Create reservation
         let result = sqlx::query!(
             "INSERT INTO reservations (equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at)
@@ -2291,30 +2267,6 @@ impl Handler {
             return Err(format!(
                 "Updated reservation would conflict with existing booking by <@{}> from {} to {}",
                 conflict.user_id, start_jst, end_jst
-            ));
-        }
-
-        // Check for conflicts with maintenance windows
-        let maintenance_conflicts = sqlx::query!(
-            "SELECT id, start_utc, end_utc, reason FROM maintenance_windows 
-             WHERE equipment_id = ? AND canceled_at_utc IS NULL
-             AND start_utc < ? AND end_utc > ?",
-            current.equipment_id,
-            end_time,
-            start_time
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
-
-        if !maintenance_conflicts.is_empty() {
-            let maintenance = &maintenance_conflicts[0];
-            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.start_utc));
-            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.end_utc));
-            let reason_text = maintenance.reason.as_deref().unwrap_or("Equipment maintenance");
-            return Err(format!(
-                "Updated reservation would conflict with scheduled maintenance ({}) from {} to {}. Please choose a different time.",
-                reason_text, start_jst, end_jst
             ));
         }
 
@@ -2725,7 +2677,7 @@ impl Handler {
 
         if let (Some(start), Some(end)) = (start_time, end_time) {
             // Get guild context for quota validation
-            let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+            let guild_id = interaction.guild_id.ok_or_else(|| anyhow::anyhow!("Missing guild context"))?;
             let guild_id_i64 = guild_id.get() as i64;
             
             // Get user roles for quota validation
@@ -3698,7 +3650,7 @@ impl Handler {
         };
 
         // Get guild context for quota validation
-        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id = interaction.guild_id.ok_or_else(|| anyhow::anyhow!("Missing guild context"))?;
         let guild_id_i64 = guild_id.get() as i64;
         
         // Get user roles for quota validation
@@ -3830,7 +3782,7 @@ impl Handler {
         };
 
         // Get guild context for quota validation
-        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id = interaction.guild_id.ok_or_else(|| anyhow::anyhow!("Missing guild context"))?;
         let guild_id_i64 = guild_id.get() as i64;
         
         // Get user roles for quota validation
