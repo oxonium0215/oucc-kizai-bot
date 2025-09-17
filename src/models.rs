@@ -227,6 +227,7 @@ pub enum MessageType {
     EquipmentEmbed,
     OverallManagement,
     Guide,
+    Header,
 }
 
 impl From<String> for MessageType {
@@ -235,6 +236,7 @@ impl From<String> for MessageType {
             "EquipmentEmbed" => Self::EquipmentEmbed,
             "OverallManagement" => Self::OverallManagement,
             "Guide" => Self::Guide,
+            "Header" => Self::Header,
             _ => Self::Guide,
         }
     }
@@ -246,6 +248,7 @@ impl From<MessageType> for String {
             MessageType::EquipmentEmbed => "EquipmentEmbed".to_string(),
             MessageType::OverallManagement => "OverallManagement".to_string(),
             MessageType::Guide => "Guide".to_string(),
+            MessageType::Header => "Header".to_string(),
         }
     }
 }

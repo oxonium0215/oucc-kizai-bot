@@ -119,8 +119,10 @@ LOG_LEVEL=info                       # Default: info
 
 1. **Invite the bot** to your Discord server with the required permissions
 2. **Run `/setup`** in the channel you want to use for equipment management
-3. **Confirm the setup** and optionally configure admin roles
-4. **Use "Overall Management"** button to add your first equipment
+3. **Permission Check**: The bot will verify it has required permissions (Send Messages, Manage Messages, Embed Links, etc.)
+4. **Role Selection**: Optionally select custom admin roles who can manage equipment (Step 1)
+5. **Confirmation**: Review your settings and complete setup (Step 2)
+6. **Use "Overall Management"** button to add your first equipment
 
 ### Equipment Management
 

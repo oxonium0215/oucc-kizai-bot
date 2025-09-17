@@ -1242,6 +1242,7 @@ dependencies = [
  "chrono-tz",
  "dotenv",
  "futures",
+ "lazy_static",
  "serde",
  "serde_json",
  "serenity",
