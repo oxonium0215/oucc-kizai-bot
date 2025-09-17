@@ -282,6 +282,8 @@ impl Handler {
                     self.handle_reservation_wizard_cancel(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("change_reservation_select:") {
                     self.handle_change_reservation_select(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("return_select:") {
+                    self.handle_return_select(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("change_res_time:") {
                     self.handle_change_reservation_time(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("change_res_location:") {
@@ -292,6 +294,10 @@ impl Handler {
                     self.handle_confirm_cancel_reservation(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("abort_cancel_res:") {
                     self.handle_abort_cancel_reservation(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("confirm_return:") {
+                    self.handle_confirm_return(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("cancel_return:") {
+                    self.handle_cancel_return_flow(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -547,6 +553,8 @@ impl Handler {
                     self.handle_change_time_modal(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("change_location_modal:") {
                     self.handle_change_location_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("return_modal:") {
+                    self.handle_return_modal(ctx, interaction).await?
                 } else {
                     error!("Unknown modal interaction: {}", interaction.data.custom_id);
                 }
@@ -969,13 +977,128 @@ impl Handler {
             return Ok(());
         }
 
-        // For now, just respond with a placeholder message
-        // TODO: Implement equipment return functionality in future PR
-        let response = serenity::all::CreateInteractionResponse::Message(
-            serenity::all::CreateInteractionResponseMessage::new()
-                .content("↩️ Equipment return functionality coming soon!")
-                .ephemeral(true),
-        );
+        let user_id = interaction.user.id.get() as i64;
+        
+        // Find reservations that can be returned for this user and equipment
+        // A reservation can be returned if:
+        // 1. It's confirmed and not already returned (returned_at IS NULL)
+        // 2. It's currently active (current time is in [start_time, end_time])
+        //    OR it's past end_time but still not returned (overdue returns)
+        let returnable_reservations = sqlx::query!(
+            "SELECT r.id, r.start_time, r.end_time, r.location, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.equipment_id = ? AND r.user_id = ? AND r.status = 'Confirmed' 
+             AND r.returned_at IS NULL 
+             AND CURRENT_TIMESTAMP >= r.start_time
+             ORDER BY r.start_time ASC",
+            equipment_id,
+            user_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        if returnable_reservations.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You don't have any active reservations that can be returned for this equipment.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        if returnable_reservations.len() == 1 {
+            // Single reservation - proceed directly to return modal
+            let reservation = &returnable_reservations[0];
+            let reservation_id = reservation.id.unwrap_or(0);
+            self.show_return_modal(ctx, interaction, reservation_id, &reservation.equipment_name).await?;
+        } else {
+            // Multiple reservations - show selection menu
+            use serenity::all::{CreateEmbed, CreateActionRow, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, Colour};
+            use crate::time;
+            
+            let equipment_name = &returnable_reservations[0].equipment_name;
+            
+            let embed = CreateEmbed::new()
+                .title("↩️ Select Reservation to Return")
+                .description(format!("**Equipment:** {}\n\nYou have multiple active reservations for this equipment. Please select which one you want to return:", equipment_name))
+                .color(Colour::ORANGE);
+
+            let mut options = Vec::new();
+            for reservation in &returnable_reservations {
+                let reservation_id = reservation.id.unwrap_or(0);
+                let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+                let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+                let location = reservation.location.as_deref().unwrap_or("Not specified");
+                
+                options.push(
+                    CreateSelectMenuOption::new(
+                        format!("{} - {}", start_jst, end_jst),
+                        format!("return_reservation_{}", reservation_id)
+                    )
+                    .description(format!("Location: {}", location))
+                );
+            }
+
+            let select_menu = CreateSelectMenu::new(
+                format!("return_select:{}", interaction.token),
+                CreateSelectMenuKind::String { options }
+            )
+            .placeholder("Choose a reservation to return...")
+            .max_values(1);
+
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![CreateActionRow::SelectMenu(select_menu)])
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+        
+        Ok(())
+    }
+
+    // Return flow helper methods
+    
+    async fn show_return_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        reservation_id: i64,
+        equipment_name: &str,
+    ) -> Result<()> {
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        // Get equipment's default return location
+        let equipment = sqlx::query!(
+            "SELECT default_return_location FROM equipment 
+             WHERE id = (SELECT equipment_id FROM reservations WHERE id = ?)",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+        
+        let default_location = equipment
+            .and_then(|e| e.default_return_location)
+            .unwrap_or_else(|| "Club Room".to_string());
+        
+        let modal = CreateModal::new(
+            format!("return_modal:{}", reservation_id), 
+            format!("Return {}", equipment_name)
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "return_location", "Return Location")
+                    .placeholder("Where are you returning this equipment?")
+                    .value(default_location)
+                    .required(true)
+                    .max_length(100),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
@@ -3316,6 +3439,391 @@ impl Handler {
                         .ephemeral(true),
                 );
                 interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_return_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        // Extract reservation ID from custom_id: "return_modal:{reservation_id}"
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("return_modal:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in return modal: {}", interaction.data.custom_id);
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Error processing return request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Extract return location from modal
+        let mut return_location = String::new();
+        
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "return_location" {
+                        return_location = input_text.value.clone().unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if return_location.trim().is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Return location is required.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Show confirmation screen
+        self.show_return_confirmation(ctx, interaction, reservation_id, &return_location).await?;
+        Ok(())
+    }
+
+    async fn handle_return_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Extract selected reservation ID from select menu data
+        let selected_value = if let serenity::all::ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            values.first().cloned().unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let reservation_id_str = selected_value
+            .strip_prefix("return_reservation_")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in return select: {}", selected_value);
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Error processing return request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Get equipment name for the modal
+        let equipment = sqlx::query!(
+            "SELECT e.name FROM equipment e 
+             JOIN reservations r ON e.id = r.equipment_id 
+             WHERE r.id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let equipment_name = equipment
+            .map(|e| e.name)
+            .unwrap_or_else(|| "Unknown Equipment".to_string());
+
+        self.show_return_modal(ctx, interaction, reservation_id, &equipment_name).await?;
+        Ok(())
+    }
+
+    async fn show_return_confirmation(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+        reservation_id: i64,
+        return_location: &str,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        use crate::time;
+        
+        // Get reservation details for confirmation
+        let reservation = sqlx::query!(
+            "SELECT r.start_time, r.end_time, r.location, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or has been cancelled.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+        let original_location = reservation.location.as_deref().unwrap_or("Not specified");
+
+        let embed = CreateEmbed::new()
+            .title("↩️ Confirm Equipment Return")
+            .description(format!(
+                "**Equipment:** {}\n**Reservation Period:** {} to {}\n**Original Location:** {}\n**Return Location:** {}\n\nPlease confirm that you want to return this equipment now.",
+                reservation.equipment_name,
+                start_jst,
+                end_jst,
+                original_location,
+                return_location
+            ))
+            .color(Colour::ORANGE)
+            .footer(serenity::all::CreateEmbedFooter::new("This action cannot be undone without admin assistance"));
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("confirm_return:{}", reservation_id))
+                .label("✅ Confirm Return")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("cancel_return:{}", reservation_id))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons])
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_confirm_return(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Extract reservation ID from custom_id: "confirm_return:{reservation_id}"
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("confirm_return:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in confirm return: {}", interaction.data.custom_id);
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Error processing return request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let user_id = interaction.user.id.get() as i64;
+
+        // Extract return location from the original embed description
+        let return_location = if let Some(embed) = interaction.message.embeds.first() {
+            if let Some(description) = &embed.description {
+                // Parse return location from description
+                if let Some(start) = description.find("**Return Location:** ") {
+                    let location_start = start + "**Return Location:** ".len();
+                    if let Some(end) = description[location_start..].find('\n') {
+                        description[location_start..location_start + end].to_string()
+                    } else {
+                        description[location_start..].to_string()
+                    }
+                } else {
+                    "Club Room".to_string()
+                }
+            } else {
+                "Club Room".to_string()
+            }
+        } else {
+            "Club Room".to_string()
+        };
+
+        // Process the return in a transaction
+        match self.process_equipment_return(reservation_id, user_id, &return_location).await {
+            Ok((equipment_name, reservation_details)) => {
+                use crate::time;
+                let return_time_jst = time::utc_to_jst_string(chrono::Utc::now());
+                
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ **Equipment Returned Successfully!**\n\n📦 **Equipment:** {}\n📍 **Return Location:** {}\n🕐 **Return Time:** {}\n\n{}",
+                            equipment_name,
+                            return_location,
+                            return_time_jst,
+                            reservation_details
+                        ))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+
+                // Trigger reconcile for the equipment channel
+                if let Some(guild_id) = interaction.guild_id {
+                    if let Err(e) = self.reconcile_equipment_displays(ctx, guild_id.get() as i64).await {
+                        error!("Failed to reconcile equipment displays after return: {}", e);
+                    }
+                }
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ **Failed to Return Equipment**\n\n{}", err_msg))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_cancel_return_flow(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("❌ Return cancelled.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn process_equipment_return(
+        &self,
+        reservation_id: i64,
+        user_id: i64,
+        return_location: &str,
+    ) -> Result<(String, String), String> {
+        // Start transaction
+        let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
+
+        // Get reservation and equipment details
+        let reservation = sqlx::query!(
+            "SELECT r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, r.returned_at,
+                    e.name as equipment_name, e.status as equipment_status
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or("Reservation not found")?;
+
+        // Verify ownership
+        if reservation.user_id != user_id {
+            return Err("You can only return your own reservations".to_string());
+        }
+
+        // Check if already returned
+        if reservation.returned_at.is_some() {
+            return Err("This reservation has already been returned".to_string());
+        }
+
+        // Check if reservation is active or past (can return overdue items)
+        let now = chrono::Utc::now().naive_utc();
+        if reservation.start_time > now {
+            return Err("Cannot return equipment before the reservation period starts".to_string());
+        }
+
+        let return_time = chrono::Utc::now();
+        let return_time_naive = return_time.naive_utc();
+
+        // Update reservation with return information
+        sqlx::query!(
+            "UPDATE reservations 
+             SET returned_at = ?, return_location = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            return_time_naive,
+            return_location,
+            reservation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update reservation: {}", e))?;
+
+        // Update equipment status to Available and set current location
+        sqlx::query!(
+            "UPDATE equipment 
+             SET status = 'Available', current_location = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            return_location,
+            reservation.equipment_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update equipment: {}", e))?;
+
+        // Log the return event
+        let log_notes = format!("Returned from reservation {}", reservation_id);
+        sqlx::query!(
+            "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+             VALUES (?, ?, 'Returned', ?, ?, 'Available', ?, ?)",
+            reservation.equipment_id,
+            user_id,
+            return_location,
+            reservation.equipment_status,
+            log_notes,
+            return_time_naive
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to log return: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        use crate::time;
+        let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+        let original_location = reservation.location.as_deref().unwrap_or("Not specified");
+
+        let details = format!(
+            "📅 **Reservation Period:** {} to {}\n📍 **Original Location:** {}",
+            start_jst, end_jst, original_location
+        );
+
+        Ok((reservation.equipment_name, details))
+    }
+
+    async fn reconcile_equipment_displays(&self, ctx: &Context, guild_id: i64) -> Result<()> {
+        // Get reservation channel for this guild
+        let guild = sqlx::query!(
+            "SELECT reservation_channel_id FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(guild_data) = guild {
+            if let Some(channel_id) = guild_data.reservation_channel_id {
+                // Trigger equipment rendering reconcile
+                let equipment_renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                if let Err(e) = equipment_renderer.reconcile_equipment_display(ctx, guild_id, channel_id).await {
+                    error!("Failed to reconcile equipment channel: {}", e);
+                }
             }
         }
 
