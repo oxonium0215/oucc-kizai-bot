@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT default_return_location FROM equipment \n             WHERE id = (SELECT equipment_id FROM reservations WHERE id = ?)",
+  "describe": {
+    "columns": [
+      {
+        "name": "default_return_location",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cf731da04d5317ca9628d397d6309ac580f7c3f335dff40ac9cbee814d74a040"
+}

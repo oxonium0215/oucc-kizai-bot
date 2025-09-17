@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.location, e.name as equipment_name \n             FROM reservations r \n             JOIN equipment e ON r.equipment_id = e.id\n             WHERE r.id = ? AND r.status = 'Confirmed'",
+  "describe": {
+    "columns": [
+      {
+        "name": "location",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "equipment_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "d2288b3d3d259f2098f1f632a92fa7f7cd3cf71287e99a0ae69733288b30cc84"
+}

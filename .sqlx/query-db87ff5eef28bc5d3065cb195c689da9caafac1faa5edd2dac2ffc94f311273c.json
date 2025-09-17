@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT start_time, end_time FROM reservations WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "start_time",
+        "ordinal": 0,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_time",
+        "ordinal": 1,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "db87ff5eef28bc5d3065cb195c689da9caafac1faa5edd2dac2ffc94f311273c"
+}

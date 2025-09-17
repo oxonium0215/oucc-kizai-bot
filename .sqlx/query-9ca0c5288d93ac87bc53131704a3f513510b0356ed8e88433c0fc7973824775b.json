@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at\n             FROM reservations \n             WHERE equipment_id = ? AND status = 'Confirmed' AND end_time > CURRENT_TIMESTAMP\n             ORDER BY start_time ASC\n             LIMIT 1",
+  "query": "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, e.name as equipment_name\n             FROM reservations r \n             JOIN equipment e ON r.equipment_id = e.id\n             WHERE r.id = ? AND r.status = 'Confirmed'",
   "describe": {
     "columns": [
       {
@@ -34,35 +34,23 @@
         "type_info": "Text"
       },
       {
-        "name": "status",
+        "name": "equipment_name",
         "ordinal": 6,
         "type_info": "Text"
-      },
-      {
-        "name": "created_at",
-        "ordinal": 7,
-        "type_info": "Datetime"
-      },
-      {
-        "name": "updated_at",
-        "ordinal": 8,
-        "type_info": "Datetime"
       }
     ],
     "parameters": {
       "Right": 1
     },
     "nullable": [
-      true,
       false,
       false,
       false,
       false,
-      true,
       false,
       true,
-      true
+      false
     ]
   },
-  "hash": "0922d58b22d96d2d372faf058586cf2827fe9c5311078abbf3820452d0eb14ef"
+  "hash": "9ca0c5288d93ac87bc53131704a3f513510b0356ed8e88433c0fc7973824775b"
 }
