@@ -493,7 +493,7 @@ impl QuotaValidationResult {
 }
 
 /// Helper function to take the maximum of two optional values (None is treated as unlimited)
-fn max_option(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+pub fn max_option(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     match (a, b) {
         (None, _) => None,  // None means unlimited
         (_, None) => None,  // None means unlimited
@@ -502,7 +502,7 @@ fn max_option(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 }
 
 /// Calculate duration in hours between two timestamps
-fn calculate_duration_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> f64 {
+pub fn calculate_duration_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> f64 {
     let duration = end - start;
     duration.num_seconds() as f64 / 3600.0
 }

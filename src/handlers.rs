@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use crate::commands::SetupCommand;
 use crate::utils;
 use crate::equipment::EquipmentRenderer;
+use crate::quota_validator::{QuotaValidator, QuotaValidationResult};
 
 // In-memory storage for reservation wizard state
 #[derive(Debug, Clone)]
@@ -89,11 +90,15 @@ struct ComponentInteractionRef {
 
 pub struct Handler {
     db: SqlitePool,
+    quota_validator: QuotaValidator,
 }
 
 impl Handler {
     pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+        Self { 
+            quota_validator: QuotaValidator::new(db.clone()),
+            db,
+        }
     }
 }
 
@@ -1652,22 +1657,32 @@ impl Handler {
             }
         };
 
-        // Create reservation with conflict detection
+        // Get guild context for quota validation
+        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id_i64 = guild_id.get() as i64;
+        
+        // Get user roles for quota validation
+        let user_roles = if let Some(member) = &interaction.member {
+            member.roles.iter().map(|r| r.get() as i64).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        // Create reservation with conflict detection and quota validation
         match self.create_reservation_with_conflict_check(
+            guild_id_i64,
             equipment_id,
             interaction.user.id.get() as i64,
+            &user_roles,
             start_utc,
             end_utc,
             if location.is_empty() { None } else { Some(location) },
         ).await {
             Ok(reservation_id) => {
                 // Success - refresh equipment display
-                if let Some(guild_id) = interaction.guild_id {
-                    let guild_id_i64 = guild_id.get() as i64;
-                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
-                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
-                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
-                    }
+                if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                    let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                    let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
                 }
 
                 let response = serenity::all::CreateInteractionResponse::Message(
@@ -2115,12 +2130,30 @@ impl Handler {
 
     async fn create_reservation_with_conflict_check(
         &self,
+        guild_id: i64,
         equipment_id: i64,
         user_id: i64,
+        user_roles: &[i64],
         start_time: chrono::DateTime<chrono::Utc>,
         end_time: chrono::DateTime<chrono::Utc>,
         location: Option<String>,
     ) -> Result<i64, String> {
+        // Check quota limits before anything else
+        let quota_result = self.quota_validator.validate_reservation_quota(
+            guild_id,
+            user_id,
+            user_roles,
+            start_time,
+            end_time,
+            None, // Not excluding any reservation for new reservations
+        ).await.map_err(|e| format!("Quota validation error: {}", e))?;
+
+        if !quota_result.is_success() {
+            if let Some(error_msg) = quota_result.error_message() {
+                return Err(error_msg);
+            }
+        }
+
         // Start transaction for conflict detection
         let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
 
@@ -2680,19 +2713,30 @@ impl Handler {
         };
 
         if let (Some(start), Some(end)) = (start_time, end_time) {
-            // Create reservation with conflict detection
+            // Get guild context for quota validation
+            let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+            let guild_id_i64 = guild_id.get() as i64;
+            
+            // Get user roles for quota validation
+            let user_roles = if let Some(member) = &interaction.member {
+                member.roles.iter().map(|r| r.get() as i64).collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            // Create reservation with conflict detection and quota validation
             match self.create_reservation_with_conflict_check(
+                guild_id_i64,
                 equipment_id,
                 user_id,
+                &user_roles,
                 start,
                 end,
                 location,
             ).await {
                 Ok(reservation_id) => {
                     // Success - refresh equipment display
-                    if let Some(guild_id) = interaction.guild_id {
-                        let guild_id_i64 = guild_id.get() as i64;
-                        if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
                             let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
                             let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
                         }
