@@ -179,6 +179,75 @@ Administrators can:
 - Access Overall Management panel for equipment/location/tag management
 - View detailed equipment logs with full reservation history
 
+### Overall Management
+
+The Overall Management panel provides a comprehensive dashboard for equipment administrators to monitor and manage all reservations. Access it by clicking the "⚙️ Overall Management" button in the header message.
+
+#### Access Control
+- **Admin-only access**: Only guild administrators or users with configured admin roles can access
+- **Ephemeral interactions**: All management interactions are private and don't create channel noise
+- **Permission enforcement**: Non-admin users receive a polite denial message
+
+#### Dashboard Features
+
+**Current Filters Display**
+- Shows active equipment, time, and status filters
+- Real-time filter summary for easy reference
+
+**Reservation Listings**
+- Paginated view of filtered reservations (10 per page)
+- Compact format: `[Equipment] start_jst → end_jst, @user • status • location`
+- Navigation: Previous/Next page controls when needed
+
+**Filter Controls**
+- **🔧 Equipment Filter**: Multi-select dropdown with "All Equipment" option (up to 25 equipment items)
+- **📅 Time Filter**: Preset options (Today, Next 24h, Next 7 days, All Time)
+- **📊 Status Filter**: Active, Upcoming, Returned Today, All statuses
+- **🗑️ Clear All**: Reset all filters to defaults
+
+#### Bulk Actions
+
+**🔄 Refresh Display**
+- Triggers reconciliation of the equipment channel
+- Updates all equipment embeds with current status
+- Provides success/failure feedback
+- Useful after manual database changes or system issues
+
+**📊 Export CSV**
+- Generates CSV export based on current filters
+- Columns: Reservation ID, Equipment, User ID, Start/End Times (JST & UTC), Status, Location, Return info
+- Shows export preview with summary statistics
+- Includes applied filter information for reference
+
+**🔗 Jump to Equipment** *(Coming Soon)*
+- Will provide direct links to specific equipment embeds
+- Planned feature for quick navigation to equipment messages
+
+#### Usage Examples
+
+**Find Active Loans for Specific Equipment:**
+1. Click "🔧 Equipment Filter" → Select target equipment
+2. Click "📊 Status Filter" → Select "Active"
+3. View filtered results showing current borrowers
+
+**Export Today's Returns:**
+1. Click "📅 Time Filter" → Select "Today"
+2. Click "📊 Status Filter" → Select "Returned Today"
+3. Click "📊 Export CSV" for detailed return report
+
+**Monitor Upcoming Reservations:**
+1. Click "📅 Time Filter" → Select "Next 24h"
+2. Click "📊 Status Filter" → Select "Upcoming"
+3. Review reservations starting soon
+
+#### Technical Details
+
+- **State Management**: Per-user session state with automatic cleanup
+- **Real-time Updates**: Filters update display immediately
+- **Performance**: In-memory filtering for responsive interaction
+- **Rate Limiting**: Respects Discord API limits with proper debouncing
+- **JST Time Display**: All times shown in Japan Standard Time for user convenience
+
 ## Development
 
 ### Project Structure
@@ -363,6 +432,33 @@ If messages get out of sync:
 - The bot implements backoff strategies
 - If hitting rate limits frequently, check for permission loops
 - Consider increasing delays in message update operations
+
+**Overall Management Issues:**
+
+*"You need administrator permissions" error:*
+- Verify you have Administrator permission in the guild
+- Check if you're assigned to configured admin roles from `/setup`
+- Contact a guild administrator to grant proper permissions
+
+*"No equipment found" when trying to filter:*
+- Use Overall Management → Add Equipment to create equipment first
+- Verify equipment was added to the correct guild
+- Check if equipment was accidentally deleted
+
+*Filters showing no results:*
+- Try clearing all filters with "🗑️ Clear All" button
+- Check if time filters are too restrictive (e.g., "Today" when no reservations exist)
+- Verify equipment IDs are correct in equipment filter
+
+*CSV export shows "coming soon":*
+- CSV download feature provides preview data for now
+- Use the dashboard view for current reservation monitoring
+- Full file download functionality planned for future release
+
+*Dashboard not updating after changes:*
+- Use "🔄 Refresh Display" to trigger equipment channel reconciliation
+- Check Discord API rate limits in bot logs
+- Verify database connectivity if issues persist
 
 ## Testing & Validation
 
