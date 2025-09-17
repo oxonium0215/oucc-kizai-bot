@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jobs \n             SET status = 'Cancelled', updated_at = CURRENT_TIMESTAMP\n             WHERE job_type = 'reminder' \n             AND status = 'Pending'\n             AND JSON_EXTRACT(payload, '$.reservation_id') = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c0e8f9981819a2bdeff993eed04887b145ff6ea3950009aa0cbdce2d0d0ad102"
+}
