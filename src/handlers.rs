@@ -1838,7 +1838,7 @@ impl Handler {
             }
         };
 
-        // Get reservation details for quota validation
+        // Get reservation details 
         let reservation_details = sqlx::query!(
             "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
             reservation_id
@@ -1858,6 +1858,10 @@ impl Handler {
                 return Ok(());
             }
         };
+
+        // Get guild context
+        let guild_id = interaction.guild_id.ok_or(anyhow::anyhow!("Missing guild context"))?;
+        let guild_id_i64 = guild_id.get() as i64;
 
         // Update reservation with conflict detection  
         match self.update_reservation_with_conflict_check(
@@ -3654,7 +3658,7 @@ impl Handler {
             }
         };
 
-        // Get reservation details for quota validation
+        // Get reservation details 
         let reservation_details = sqlx::query!(
             "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
             reservation_id
@@ -3782,7 +3786,7 @@ impl Handler {
             }
         };
 
-        // Get reservation details for quota validation
+        // Get reservation details 
         let reservation_details = sqlx::query!(
             "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
             reservation_id
@@ -3803,7 +3807,7 @@ impl Handler {
             }
         };
 
-        // Get guild context for quota validation
+        // Get guild context 
         let guild_id = interaction.guild_id.ok_or(anyhow::anyhow!("Missing guild context"))?;
         let guild_id_i64 = guild_id.get() as i64;
         
@@ -4025,7 +4029,7 @@ impl Handler {
         }
 
         let now_utc = chrono::Utc::now();
-        if reservation.end_time <= now_utc {
+        if Self::naive_datetime_to_utc(reservation.end_time) <= now_utc {
             let response = serenity::all::CreateInteractionResponse::Message(
                 serenity::all::CreateInteractionResponseMessage::new()
                     .content("❌ Cannot transfer a reservation that has ended.")
@@ -4098,10 +4102,10 @@ impl Handler {
             };
 
             // Validate scheduled time is within reservation window
-            let min_execute_time = std::cmp::max(now_utc, reservation.start_time);
-            if execute_at_utc <= now_utc || execute_at_utc < min_execute_time || execute_at_utc >= reservation.end_time {
+            let min_execute_time = std::cmp::max(now_utc, Self::naive_datetime_to_utc(reservation.start_time));
+            if execute_at_utc <= now_utc || execute_at_utc < min_execute_time || execute_at_utc >= Self::naive_datetime_to_utc(reservation.end_time) {
                 let min_jst = crate::time::utc_to_jst_string(min_execute_time);
-                let max_jst = crate::time::utc_to_jst_string(reservation.end_time);
+                let max_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
                 let response = serenity::all::CreateInteractionResponse::Message(
                     serenity::all::CreateInteractionResponseMessage::new()
                         .content(format!(
@@ -5216,8 +5220,8 @@ impl Handler {
         }
 
         // If admin and no personal reservations, find any active/upcoming reservations
-        let available_reservations = if user_reservations.is_empty() && is_admin {
-            sqlx::query!(
+        if user_reservations.is_empty() && is_admin {
+            let admin_reservations = sqlx::query!(
                 "SELECT id, start_time, end_time, status, user_id FROM reservations 
                  WHERE equipment_id = ? AND status = 'Confirmed' 
                  AND end_time > CURRENT_TIMESTAMP AND returned_at IS NULL
@@ -5225,23 +5229,24 @@ impl Handler {
                 equipment_id
             )
             .fetch_all(&self.db)
-            .await?
+            .await?;
+
+            if admin_reservations.is_empty() {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ No active or upcoming reservations found for this equipment.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+
+            // Show transfer modal for the first available reservation
+            self.show_transfer_modal(ctx, interaction, admin_reservations[0].id.unwrap_or(0)).await
         } else {
-            user_reservations
-        };
-
-        if available_reservations.is_empty() {
-            let response = serenity::all::CreateInteractionResponse::Message(
-                serenity::all::CreateInteractionResponseMessage::new()
-                    .content("❌ No active or upcoming reservations found for this equipment.")
-                    .ephemeral(true),
-            );
-            interaction.create_response(&ctx.http, response).await?;
-            return Ok(());
+            // Show transfer modal for the first available reservation
+            self.show_transfer_modal(ctx, interaction, user_reservations[0].id.unwrap_or(0)).await
         }
-
-        // Show transfer modal for the first available reservation
-        self.show_transfer_modal(ctx, interaction, available_reservations[0].id).await
     }
 
     /// Handle transfer action from Overall Management panel
@@ -5334,8 +5339,8 @@ impl Handler {
         .fetch_one(&self.db)
         .await?;
 
-        let start_jst = crate::time::utc_to_jst_string(reservation.start_time);
-        let end_jst = crate::time::utc_to_jst_string(reservation.end_time);
+        let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
 
         let modal = CreateModal::new(
             format!("transfer_modal_{}", reservation_id),

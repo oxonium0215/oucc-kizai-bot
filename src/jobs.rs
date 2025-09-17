@@ -69,15 +69,35 @@ impl JobWorker {
         let now = Utc::now();
 
         // Get pending transfer requests that are due for execution
-        let transfers = sqlx::query_as!(
-            crate::models::TransferRequest,
-            "SELECT * FROM transfer_requests 
+        let transfer_rows = sqlx::query!(
+            "SELECT id, reservation_id, from_user_id, to_user_id, requested_by_user_id,
+                    execute_at_utc, note, expires_at, status, canceled_at_utc, 
+                    canceled_by_user_id, created_at, updated_at
+             FROM transfer_requests 
              WHERE status = 'Pending' AND execute_at_utc IS NOT NULL AND execute_at_utc <= ?
              ORDER BY execute_at_utc LIMIT 10",
             now
         )
         .fetch_all(&self.db)
         .await?;
+
+        let transfers: Vec<crate::models::TransferRequest> = transfer_rows.into_iter().map(|row| {
+            crate::models::TransferRequest {
+                id: row.id.unwrap_or(0),
+                reservation_id: row.reservation_id,
+                from_user_id: row.from_user_id,
+                to_user_id: row.to_user_id,
+                requested_by_user_id: row.requested_by_user_id,
+                execute_at_utc: row.execute_at_utc.map(|dt| Self::naive_datetime_to_utc(dt)),
+                note: row.note,
+                expires_at: Self::naive_datetime_to_utc(row.expires_at),
+                status: row.status,
+                canceled_at_utc: row.canceled_at_utc.map(|dt| Self::naive_datetime_to_utc(dt)),
+                canceled_by_user_id: row.canceled_by_user_id,
+                created_at: Self::naive_datetime_to_utc(row.created_at),
+                updated_at: Self::naive_datetime_to_utc(row.updated_at),
+            }
+        }).collect();
 
         for transfer in transfers {
             if let Err(e) = self.execute_scheduled_transfer(&transfer).await {
@@ -127,7 +147,7 @@ impl JobWorker {
 
         // Check if reservation has ended
         let now = chrono::Utc::now();
-        if reservation.end_time <= now {
+        if Self::naive_datetime_to_utc(reservation.end_time) <= now {
             warn!("Reservation {} for transfer {} has already ended", transfer.reservation_id, transfer.id);
             self.mark_transfer_expired(transfer).await?;
             return Ok(());
@@ -465,6 +485,11 @@ impl JobWorker {
         }
 
         Ok(())
+    }
+
+    /// Helper function to convert NaiveDateTime to DateTime<Utc>
+    fn naive_datetime_to_utc(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
     }
 }
 

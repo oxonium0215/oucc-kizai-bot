@@ -40,13 +40,13 @@ impl MaintenanceHelper {
 
         if let Some(row) = maintenance_row {
             let maintenance = MaintenanceWindow {
-                id: row.id,
+                id: row.id.unwrap_or(0),
                 equipment_id: row.equipment_id,
-                start_utc: Self::naive_datetime_to_utc(row.start_utc),
-                end_utc: Self::naive_datetime_to_utc(row.end_utc),
+                start_utc: Self::naive_datetime_to_utc(row.start_utc.unwrap()),
+                end_utc: Self::naive_datetime_to_utc(row.end_utc.unwrap()),
                 reason: row.reason,
                 created_by_user_id: row.created_by_user_id,
-                created_at_utc: Self::naive_datetime_to_utc(row.created_at_utc),
+                created_at_utc: Self::naive_datetime_to_utc(row.created_at_utc.unwrap()),
                 canceled_at_utc: row.canceled_at_utc.map(Self::naive_datetime_to_utc),
                 canceled_by_user_id: row.canceled_by_user_id,
             };
@@ -78,13 +78,13 @@ impl MaintenanceHelper {
 
         if let Some(row) = maintenance_row {
             let maintenance = MaintenanceWindow {
-                id: row.id,
+                id: row.id.unwrap_or(0),
                 equipment_id: row.equipment_id,
-                start_utc: Self::naive_datetime_to_utc(row.start_utc),
-                end_utc: Self::naive_datetime_to_utc(row.end_utc),
+                start_utc: Self::naive_datetime_to_utc(row.start_utc.unwrap()),
+                end_utc: Self::naive_datetime_to_utc(row.end_utc.unwrap()),
                 reason: row.reason,
                 created_by_user_id: row.created_by_user_id,
-                created_at_utc: Self::naive_datetime_to_utc(row.created_at_utc),
+                created_at_utc: Self::naive_datetime_to_utc(row.created_at_utc.unwrap()),
                 canceled_at_utc: row.canceled_at_utc.map(Self::naive_datetime_to_utc),
                 canceled_by_user_id: row.canceled_by_user_id,
             };
@@ -194,7 +194,7 @@ impl MaintenanceHelper {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(reservations.into_iter().map(|r| (r.id, r.user_id)).collect())
+        Ok(reservations.into_iter().map(|r| (r.id.unwrap_or(0), r.user_id)).collect())
     }
 
     /// Helper function to convert NaiveDateTime to DateTime<Utc>
