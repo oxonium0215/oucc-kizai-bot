@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc, Duration};
 use sqlx::SqlitePool;
-use crate::models::{QuotaSettings, QuotaRoleOverride, QuotaOverrideAudit, EffectiveQuotaLimits};
+use crate::models::{QuotaSettings, QuotaRoleOverride, QuotaOverrideAudit, QuotaClassOverride, EffectiveQuotaLimits};
 
 /// Helper functions for quota operations and validation
 pub struct QuotaHelper {
@@ -135,6 +135,9 @@ impl QuotaHelper {
             max_overlap_count: base_settings.as_ref().and_then(|s| s.max_overlap_count),
             max_hours_7d: base_settings.as_ref().and_then(|s| s.max_hours_7d),
             max_hours_30d: base_settings.as_ref().and_then(|s| s.max_hours_30d),
+            max_duration_hours: None,
+            min_lead_time_minutes: None,
+            max_lead_time_days: None,
         };
 
         // Apply role overrides (most permissive wins)
@@ -157,6 +160,50 @@ impl QuotaHelper {
                     effective.max_hours_7d = max_option(effective.max_hours_7d, override_rule.max_hours_7d);
                     effective.max_hours_30d = max_option(effective.max_hours_30d, override_rule.max_hours_30d);
                 }
+            }
+        }
+
+        Ok(effective)
+    }
+
+    /// Calculate effective quota limits for a user and equipment class
+    /// This method combines guild settings, role overrides, and class-specific overrides
+    /// The most permissive value wins for each dimension
+    pub async fn get_effective_limits_with_class(
+        &self,
+        guild_id: i64,
+        user_roles: &[i64],
+        equipment_class_id: Option<i64>,
+    ) -> Result<EffectiveQuotaLimits> {
+        // Start with global/role effective limits
+        let mut effective = self.get_effective_limits(guild_id, user_roles).await?;
+
+        // Apply class-specific overrides if equipment has a class
+        if let Some(class_id) = equipment_class_id {
+            if let Some(class_override) = sqlx::query_as!(
+                QuotaClassOverride,
+                "SELECT guild_id, class_id, max_active_count, max_overlap_count, 
+                 max_hours_7d, max_hours_30d, max_duration_hours, min_lead_time_minutes,
+                 max_lead_time_days, created_at, updated_at
+                 FROM quota_class_overrides 
+                 WHERE guild_id = ? AND class_id = ?",
+                guild_id,
+                class_id
+            )
+            .fetch_optional(&self.db)
+            .await?
+            {
+                // Take the maximum value for basic quota limits (more permissive)
+                effective.max_active_count = max_option(effective.max_active_count, class_override.max_active_count);
+                effective.max_overlap_count = max_option(effective.max_overlap_count, class_override.max_overlap_count);
+                effective.max_hours_7d = max_option(effective.max_hours_7d, class_override.max_hours_7d);
+                effective.max_hours_30d = max_option(effective.max_hours_30d, class_override.max_hours_30d);
+
+                // For class-specific constraints (duration, lead time), use class values directly
+                // These are class-specific requirements, not subject to "most permissive" logic
+                effective.max_duration_hours = class_override.max_duration_hours;
+                effective.min_lead_time_minutes = class_override.min_lead_time_minutes;
+                effective.max_lead_time_days = class_override.max_lead_time_days;
             }
         }
 
@@ -249,6 +296,74 @@ impl QuotaHelper {
                     current: current_hours,
                     proposed: proposed_hours,
                     limit: max_hours_30d as f64,
+                });
+            }
+        }
+
+        Ok(QuotaValidationResult::Success)
+    }
+
+    /// Check if user is within quota limits including class-specific constraints
+    pub async fn validate_quota_limits_with_class(
+        &self,
+        guild_id: i64,
+        user_id: i64,
+        user_roles: &[i64],
+        equipment_class_id: Option<i64>,
+        proposed_start: DateTime<Utc>,
+        proposed_end: DateTime<Utc>,
+        exclude_reservation_id: Option<i64>,
+    ) -> Result<QuotaValidationResult> {
+        let limits = self.get_effective_limits_with_class(guild_id, user_roles, equipment_class_id).await?;
+        
+        // First check all the regular quota limits (active count, overlap, time windows)
+        let basic_result = self.validate_quota_limits(
+            guild_id, 
+            user_id, 
+            user_roles, 
+            proposed_start, 
+            proposed_end, 
+            exclude_reservation_id
+        ).await?;
+        
+        if !basic_result.is_success() {
+            return Ok(basic_result);
+        }
+
+        // Now check class-specific constraints
+        let now = Utc::now();
+        
+        // Check maximum duration
+        if let Some(max_duration_hours) = limits.max_duration_hours {
+            let proposed_hours = calculate_duration_hours(proposed_start, proposed_end);
+            if proposed_hours > max_duration_hours as f64 {
+                return Ok(QuotaValidationResult::ExceededMaxDuration {
+                    proposed_hours,
+                    limit_hours: max_duration_hours,
+                });
+            }
+        }
+
+        // Check minimum lead time
+        if let Some(min_lead_time_minutes) = limits.min_lead_time_minutes {
+            let lead_time = proposed_start - now;
+            let lead_minutes = lead_time.num_minutes();
+            if lead_minutes < min_lead_time_minutes {
+                return Ok(QuotaValidationResult::TooShortLeadTime {
+                    proposed_minutes: lead_minutes,
+                    min_minutes: min_lead_time_minutes,
+                });
+            }
+        }
+
+        // Check maximum lead time
+        if let Some(max_lead_time_days) = limits.max_lead_time_days {
+            let lead_time = proposed_start - now;
+            let lead_days = lead_time.num_days();
+            if lead_days > max_lead_time_days {
+                return Ok(QuotaValidationResult::TooLongLeadTime {
+                    proposed_days: lead_days,
+                    max_days: max_lead_time_days,
                 });
             }
         }
@@ -454,6 +569,10 @@ pub enum QuotaValidationResult {
     ExceededOverlapCount { current: i64, limit: i64 },
     ExceededHours7d { current: f64, proposed: f64, limit: f64 },
     ExceededHours30d { current: f64, proposed: f64, limit: f64 },
+    // Class-specific validation errors
+    ExceededMaxDuration { proposed_hours: f64, limit_hours: i64 },
+    TooShortLeadTime { proposed_minutes: i64, min_minutes: i64 },
+    TooLongLeadTime { proposed_days: i64, max_days: i64 },
 }
 
 impl QuotaValidationResult {
@@ -486,6 +605,24 @@ impl QuotaValidationResult {
                 Some(format!(
                     "❌ **Quota exceeded: 30-day usage limit**\n\nYou've used {:.1} hours in the past 30 days. Adding {:.1} hours would exceed the {:.1} hour limit.\n\n💡 **Tip:** Try a shorter reservation or wait for your usage to reset.",
                     current, proposed, limit
+                ))
+            }
+            QuotaValidationResult::ExceededMaxDuration { proposed_hours, limit_hours } => {
+                Some(format!(
+                    "❌ **Class limit exceeded: Maximum duration**\n\nThis reservation is {:.1} hours long, but the maximum duration for this equipment class is {} hours.\n\n💡 **Tip:** Shorten your reservation or contact an admin for an exception.",
+                    proposed_hours, limit_hours
+                ))
+            }
+            QuotaValidationResult::TooShortLeadTime { proposed_minutes, min_minutes } => {
+                Some(format!(
+                    "❌ **Class limit exceeded: Minimum lead time**\n\nThis reservation is only {} minutes from now, but this equipment class requires at least {} minutes lead time.\n\n💡 **Tip:** Reserve further in advance or contact an admin for an emergency exception.",
+                    proposed_minutes, min_minutes
+                ))
+            }
+            QuotaValidationResult::TooLongLeadTime { proposed_days, max_days } => {
+                Some(format!(
+                    "❌ **Class limit exceeded: Maximum lead time**\n\nThis reservation is {} days from now, but this equipment class only allows reservations up to {} days in advance.\n\n💡 **Tip:** Wait to make your reservation closer to the date you need it.",
+                    proposed_days, max_days
                 ))
             }
         }

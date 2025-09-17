@@ -101,7 +101,7 @@ impl EquipmentRenderer {
     pub async fn get_ordered_equipment(&self, guild_id: i64) -> Result<Vec<(Equipment, Option<Tag>)>> {
         // Get all equipment for the guild
         let equipment_rows = sqlx::query(
-            "SELECT id, guild_id, tag_id, name, status, current_location, 
+            "SELECT id, guild_id, tag_id, class_id, name, status, current_location, 
                     unavailable_reason, default_return_location, message_id, 
                     created_at, updated_at
              FROM equipment 
@@ -120,6 +120,7 @@ impl EquipmentRenderer {
                 id: row.get("id"),
                 guild_id: row.get("guild_id"),
                 tag_id: row.get("tag_id"),
+                class_id: row.get("class_id"), // NEW: include class_id field
                 name: row.get("name"),
                 status: row.get("status"),
                 current_location: row.get("current_location"),
@@ -189,6 +190,18 @@ impl EquipmentRenderer {
 
         if let Some(tag) = tag {
             embed = embed.field("Category", &tag.name, true);
+        }
+
+        // Add equipment class information
+        if let Some(class_id) = equipment.class_id {
+            if let Some(class) = self.get_equipment_class(class_id).await? {
+                let class_display = if let Some(emoji) = &class.emoji {
+                    format!("{} {}", emoji, class.name)
+                } else {
+                    class.name.clone()
+                };
+                embed = embed.field("Class", class_display, true);
+            }
         }
 
         if let Some(location) = &equipment.current_location {
@@ -650,6 +663,33 @@ impl EquipmentRenderer {
                 canceled_by_user_id: row.get("canceled_by_user_id"),
             };
             Ok(Some(maintenance))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get equipment class by ID
+    async fn get_equipment_class(&self, class_id: i64) -> Result<Option<crate::models::EquipmentClass>> {
+        let class_row = sqlx::query!(
+            "SELECT id, guild_id, name, emoji, description, created_at_utc 
+             FROM equipment_classes 
+             WHERE id = ?",
+            class_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(row) = class_row {
+            use crate::models::EquipmentClass;
+            let class = EquipmentClass {
+                id: row.id,
+                guild_id: row.guild_id,
+                name: row.name,
+                emoji: row.emoji,
+                description: row.description,
+                created_at_utc: to_utc_datetime(row.created_at_utc),
+            };
+            Ok(Some(class))
         } else {
             Ok(None)
         }
