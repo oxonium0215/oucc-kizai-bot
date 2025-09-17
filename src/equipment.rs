@@ -280,7 +280,7 @@ impl EquipmentRenderer {
             .components(vec![button])
     }
 
-    async fn create_equipment_buttons(&self, equipment: &Equipment) -> Result<Vec<CreateActionRow>> {
+    pub async fn create_equipment_buttons(&self, equipment: &Equipment) -> Result<Vec<CreateActionRow>> {
         let mut buttons = Vec::new();
         
         // Always show Reserve button for available equipment
