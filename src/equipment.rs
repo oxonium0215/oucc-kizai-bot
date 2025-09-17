@@ -229,7 +229,7 @@ impl EquipmentRenderer {
     async fn get_current_or_next_reservation(&self, equipment_id: i64) -> Result<Option<Reservation>> {
         // Use regular query instead of query_as! to handle type conversions manually
         let reservation_row = sqlx::query!(
-            "SELECT id, equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at
+            "SELECT id, equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at, returned_at, return_location
              FROM reservations 
              WHERE equipment_id = ? AND status = 'Confirmed' AND end_time > CURRENT_TIMESTAMP
              ORDER BY start_time ASC
@@ -255,6 +255,8 @@ impl EquipmentRenderer {
                 status: row.status,
                 created_at: to_utc_datetime(row.created_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
                 updated_at: to_utc_datetime(row.updated_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
+                returned_at: row.returned_at.map(to_utc_datetime),
+                return_location: row.return_location,
             }))
         } else {
             Ok(None)
