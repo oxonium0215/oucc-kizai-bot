@@ -586,48 +586,51 @@ impl EquipmentRenderer {
     async fn has_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<bool> {
         let now_utc = Utc::now().naive_utc();
 
-        let count = sqlx::query!(
+        let row = sqlx::query(
             "SELECT COUNT(*) as count FROM maintenance_windows 
              WHERE equipment_id = ? AND canceled_at_utc IS NULL
-             AND end_utc > ?",
-            equipment_id,
-            now_utc
+             AND end_utc > ?"
         )
+        .bind(equipment_id)
+        .bind(now_utc)
         .fetch_one(&self.db)
         .await?;
 
-        Ok(count.count > 0)
+        let count: i64 = row.get("count");
+        Ok(count > 0)
     }
 
     /// Get current or next upcoming maintenance window for equipment
     async fn get_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<Option<crate::models::MaintenanceWindow>> {
         let now_utc = Utc::now().naive_utc();
 
-        let maintenance_row = sqlx::query!(
-            "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, created_at_utc, canceled_at_utc, canceled_by_user_id
+        let maintenance_row = sqlx::query(
+            "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, 
+                    COALESCE(created_at_utc, CURRENT_TIMESTAMP) as created_at_utc, 
+                    canceled_at_utc, canceled_by_user_id
              FROM maintenance_windows 
              WHERE equipment_id = ? AND canceled_at_utc IS NULL
              AND end_utc > ?
              ORDER BY start_utc ASC
-             LIMIT 1",
-            equipment_id,
-            now_utc
+             LIMIT 1"
         )
+        .bind(equipment_id)
+        .bind(now_utc)
         .fetch_optional(&self.db)
         .await?;
 
         if let Some(row) = maintenance_row {
             use crate::models::MaintenanceWindow;
             let maintenance = MaintenanceWindow {
-                id: row.id,
-                equipment_id: row.equipment_id,
-                start_utc: to_utc_datetime(row.start_utc),
-                end_utc: to_utc_datetime(row.end_utc),
-                reason: row.reason,
-                created_by_user_id: row.created_by_user_id,
-                created_at_utc: to_utc_datetime(row.created_at_utc.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
-                canceled_at_utc: row.canceled_at_utc.map(to_utc_datetime),
-                canceled_by_user_id: row.canceled_by_user_id,
+                id: row.get("id"),
+                equipment_id: row.get("equipment_id"),
+                start_utc: to_utc_datetime(row.get("start_utc")),
+                end_utc: to_utc_datetime(row.get("end_utc")),
+                reason: row.get("reason"),
+                created_by_user_id: row.get("created_by_user_id"),
+                created_at_utc: to_utc_datetime(row.get("created_at_utc")),
+                canceled_at_utc: row.get::<Option<NaiveDateTime>, _>("canceled_at_utc").map(to_utc_datetime),
+                canceled_by_user_id: row.get("canceled_by_user_id"),
             };
             Ok(Some(maintenance))
         } else {
