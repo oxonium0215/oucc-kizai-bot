@@ -5,3 +5,5 @@ pub mod traits;
 pub mod models;
 pub mod database;
 pub mod equipment;
+pub mod handlers;
+pub mod commands;
