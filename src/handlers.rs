@@ -148,10 +148,21 @@ impl Handler {
                 self.handle_refresh_display(ctx, interaction).await?
             }
             _ => {
-                error!(
-                    "Unknown component interaction: {}",
-                    interaction.data.custom_id
-                );
+                // Check for dynamic reservation and equipment IDs
+                if interaction.data.custom_id.starts_with("eq_reserve:") {
+                    self.handle_equipment_reserve(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("res_edit:") {
+                    self.handle_reservation_edit(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("res_cancel:") {
+                    self.handle_reservation_cancel(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("res_admin_cancel:") {
+                    self.handle_reservation_admin_cancel(ctx, interaction).await?
+                } else {
+                    error!(
+                        "Unknown component interaction: {}",
+                        interaction.data.custom_id
+                    );
+                }
             }
         }
         Ok(())
@@ -386,7 +397,14 @@ impl Handler {
                 self.handle_add_equipment_modal(ctx, interaction).await?
             }
             _ => {
-                error!("Unknown modal interaction: {}", interaction.data.custom_id);
+                // Check for dynamic reservation modals
+                if interaction.data.custom_id.starts_with("reserve_modal:") {
+                    self.handle_reservation_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("edit_reservation_modal:") {
+                    self.handle_edit_reservation_modal(ctx, interaction).await?
+                } else {
+                    error!("Unknown modal interaction: {}", interaction.data.custom_id);
+                }
             }
         }
         Ok(())
@@ -633,5 +651,816 @@ impl Handler {
         }
 
         Ok(())
+    }
+
+    // Reservation handling methods
+
+    async fn handle_equipment_reserve(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let equipment_id_str = interaction.data.custom_id
+            .strip_prefix("eq_reserve:")
+            .unwrap_or("");
+            
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!("Invalid equipment ID in reserve button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Check if equipment exists and is available
+        let equipment = sqlx::query!(
+            "SELECT id, name, status, default_return_location FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let equipment = match equipment {
+            Some(eq) => eq,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Equipment not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        if equipment.status != "Available" {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ This equipment is not available for reservation.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Create reservation modal
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("reserve_modal:{}", equipment_id), 
+            format!("Reserve {}", equipment.name)
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "start_time", "Start Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .required(true),
+            ),
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "end_time", "End Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .required(true),
+            ),
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "location", "Return Location (Optional)")
+                    .placeholder(&equipment.default_return_location.unwrap_or_default())
+                    .required(false),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_reservation_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let equipment_id_str = interaction.data.custom_id
+            .strip_prefix("reserve_modal:")
+            .unwrap_or("");
+            
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!("Invalid equipment ID in reservation modal: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Extract modal data
+        let mut start_time_str = String::new();
+        let mut end_time_str = String::new();
+        let mut location = String::new();
+
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    match input_text.custom_id.as_str() {
+                        "start_time" => start_time_str = input_text.value.clone().unwrap_or_default(),
+                        "end_time" => end_time_str = input_text.value.clone().unwrap_or_default(),
+                        "location" => location = input_text.value.clone().unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Parse and validate times
+        let (start_utc, end_utc) = match self.parse_and_validate_times(&start_time_str, &end_time_str) {
+            Ok(times) => times,
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Create reservation with conflict detection
+        match self.create_reservation_with_conflict_check(
+            equipment_id,
+            interaction.user.id.get() as i64,
+            start_utc,
+            end_utc,
+            if location.is_empty() { None } else { Some(location) },
+        ).await {
+            Ok(reservation_id) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ Reservation created successfully! (ID: {})", reservation_id))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_edit(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("res_edit:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in edit button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Check permission - user must own the reservation or be admin
+        let user_id = interaction.user.id.get() as i64;
+        let guild_id = interaction.guild_id.unwrap();
+        
+        let reservation = sqlx::query!(
+            "SELECT id, equipment_id, user_id, start_time, end_time, location 
+             FROM reservations WHERE id = ? AND status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or already cancelled.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        let is_owner = reservation.user_id == user_id;
+        let is_admin = utils::is_admin(ctx, guild_id, interaction.user.id).await?;
+
+        if !is_owner && !is_admin {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You can only edit your own reservations.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Get equipment name for modal title
+        let equipment = sqlx::query!(
+            "SELECT name FROM equipment WHERE id = ?",
+            reservation.equipment_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        // Pre-fill modal with current values
+        use crate::time;
+        let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("edit_reservation_modal:{}", reservation_id), 
+            format!("Edit Reservation - {}", equipment.name)
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "start_time", "Start Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .value(start_jst)
+                    .required(true),
+            ),
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "end_time", "End Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .value(end_jst)
+                    .required(true),
+            ),
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "location", "Return Location (Optional)")
+                    .value(reservation.location.unwrap_or_default())
+                    .required(false),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_edit_reservation_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("edit_reservation_modal:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in edit modal: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Extract modal data
+        let mut start_time_str = String::new();
+        let mut end_time_str = String::new();
+        let mut location = String::new();
+
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    match input_text.custom_id.as_str() {
+                        "start_time" => start_time_str = input_text.value.clone().unwrap_or_default(),
+                        "end_time" => end_time_str = input_text.value.clone().unwrap_or_default(),
+                        "location" => location = input_text.value.clone().unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Parse and validate times
+        let (start_utc, end_utc) = match self.parse_and_validate_times(&start_time_str, &end_time_str) {
+            Ok(times) => times,
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Update reservation with conflict detection
+        match self.update_reservation_with_conflict_check(
+            reservation_id,
+            start_utc,
+            end_utc,
+            if location.is_empty() { None } else { Some(location) },
+        ).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("✅ Reservation updated successfully!")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_cancel(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("res_cancel:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in cancel button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Check permission and get reservation details
+        let user_id = interaction.user.id.get() as i64;
+        let guild_id = interaction.guild_id.unwrap();
+        
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or already cancelled.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        let is_owner = reservation.user_id == user_id;
+        let is_admin = utils::is_admin(ctx, guild_id, interaction.user.id).await?;
+
+        if !is_owner && !is_admin {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You can only cancel your own reservations.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Cancel the reservation
+        match self.cancel_reservation(reservation_id, user_id).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                use crate::time;
+                let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+                let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ Reservation cancelled successfully!\n\n**Equipment:** {}\n**Period:** {} to {}",
+                            reservation.equipment_name, start_jst, end_jst
+                        ))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_admin_cancel(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions first
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("res_admin_cancel:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in admin cancel button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Get reservation details
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or already cancelled.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Cancel the reservation (admin action)
+        let admin_id = interaction.user.id.get() as i64;
+        match self.cancel_reservation(reservation_id, admin_id).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                use crate::time;
+                let start_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+                let end_jst = time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ Reservation cancelled by admin!\n\n**Equipment:** {}\n**Original User:** <@{}>\n**Period:** {} to {}",
+                            reservation.equipment_name, reservation.user_id, start_jst, end_jst
+                        ))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Helper methods for reservation management
+
+    fn naive_datetime_to_utc(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
+    }
+
+    fn parse_and_validate_times(&self, start_str: &str, end_str: &str) -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>), String> {
+        use crate::time;
+
+        // Parse start time
+        let start_parts: Vec<&str> = start_str.split(&[' ', ':', '-'][..]).collect();
+        if start_parts.len() != 5 {
+            return Err("Invalid start time format. Use YYYY-MM-DD HH:MM".to_string());
+        }
+
+        let start_year: i32 = start_parts[0].parse().map_err(|_| "Invalid start year")?;
+        let start_month: u32 = start_parts[1].parse().map_err(|_| "Invalid start month")?;
+        let start_day: u32 = start_parts[2].parse().map_err(|_| "Invalid start day")?;
+        let start_hour: u32 = start_parts[3].parse().map_err(|_| "Invalid start hour")?;
+        let start_minute: u32 = start_parts[4].parse().map_err(|_| "Invalid start minute")?;
+
+        // Parse end time
+        let end_parts: Vec<&str> = end_str.split(&[' ', ':', '-'][..]).collect();
+        if end_parts.len() != 5 {
+            return Err("Invalid end time format. Use YYYY-MM-DD HH:MM".to_string());
+        }
+
+        let end_year: i32 = end_parts[0].parse().map_err(|_| "Invalid end year")?;
+        let end_month: u32 = end_parts[1].parse().map_err(|_| "Invalid end month")?;
+        let end_day: u32 = end_parts[2].parse().map_err(|_| "Invalid end day")?;
+        let end_hour: u32 = end_parts[3].parse().map_err(|_| "Invalid end hour")?;
+        let end_minute: u32 = end_parts[4].parse().map_err(|_| "Invalid end minute")?;
+
+        // Convert JST to UTC
+        let start_utc = time::jst_to_utc(start_year, start_month, start_day, start_hour, start_minute)
+            .ok_or("Invalid start date/time")?;
+        let end_utc = time::jst_to_utc(end_year, end_month, end_day, end_hour, end_minute)
+            .ok_or("Invalid end date/time")?;
+
+        // Validate times
+        if end_utc <= start_utc {
+            return Err("End time must be after start time".to_string());
+        }
+
+        let now = chrono::Utc::now();
+        if start_utc < now {
+            return Err("Start time cannot be in the past".to_string());
+        }
+
+        // Max 60 days in the future
+        let max_future = now + chrono::Duration::days(60);
+        if end_utc > max_future {
+            return Err("Reservation cannot extend more than 60 days into the future".to_string());
+        }
+
+        Ok((start_utc, end_utc))
+    }
+
+    async fn create_reservation_with_conflict_check(
+        &self,
+        equipment_id: i64,
+        user_id: i64,
+        start_time: chrono::DateTime<chrono::Utc>,
+        end_time: chrono::DateTime<chrono::Utc>,
+        location: Option<String>,
+    ) -> Result<i64, String> {
+        // Start transaction for conflict detection
+        let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
+
+        // Check for conflicts
+        let conflicts = sqlx::query!(
+            "SELECT id, user_id, start_time, end_time FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' 
+             AND start_time < ? AND end_time > ?",
+            equipment_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+
+        if !conflicts.is_empty() {
+            let conflict = &conflicts[0];
+            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
+            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
+            return Err(format!(
+                "Reservation conflicts with existing booking by <@{}> from {} to {}",
+                conflict.user_id, start_jst, end_jst
+            ));
+        }
+
+        // Create reservation
+        let result = sqlx::query!(
+            "INSERT INTO reservations (equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'Confirmed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            equipment_id,
+            user_id,
+            start_time,
+            end_time,
+            location
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to create reservation: {}", e))?;
+
+        let reservation_id = result.last_insert_rowid();
+
+        // Log the reservation
+        let log_notes = format!("Reservation ID: {}", reservation_id);
+        sqlx::query!(
+            "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+             VALUES (?, ?, 'Reserved', ?, NULL, 'Confirmed', ?, CURRENT_TIMESTAMP)",
+            equipment_id,
+            user_id,
+            location,
+            log_notes
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to log reservation: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        Ok(reservation_id)
+    }
+
+    async fn update_reservation_with_conflict_check(
+        &self,
+        reservation_id: i64,
+        start_time: chrono::DateTime<chrono::Utc>,
+        end_time: chrono::DateTime<chrono::Utc>,
+        location: Option<String>,
+    ) -> Result<(), String> {
+        // Start transaction for conflict detection
+        let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
+
+        // Get current reservation details
+        let current = sqlx::query!(
+            "SELECT equipment_id, user_id, start_time, end_time, location FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or("Reservation not found")?;
+
+        // Check for conflicts (excluding this reservation)
+        let conflicts = sqlx::query!(
+            "SELECT id, user_id, start_time, end_time FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' AND id != ?
+             AND start_time < ? AND end_time > ?",
+            current.equipment_id,
+            reservation_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+
+        if !conflicts.is_empty() {
+            let conflict = &conflicts[0];
+            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
+            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
+            return Err(format!(
+                "Updated reservation would conflict with existing booking by <@{}> from {} to {}",
+                conflict.user_id, start_jst, end_jst
+            ));
+        }
+
+        // Update reservation
+        sqlx::query!(
+            "UPDATE reservations SET start_time = ?, end_time = ?, location = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            start_time,
+            end_time,
+            location,
+            reservation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update reservation: {}", e))?;
+
+        // Create change notes
+        let mut notes = Vec::new();
+        if Self::naive_datetime_to_utc(current.start_time) != start_time {
+            let old_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(current.start_time));
+            let new_jst = crate::time::utc_to_jst_string(start_time);
+            notes.push(format!("Start: {} → {}", old_jst, new_jst));
+        }
+        if Self::naive_datetime_to_utc(current.end_time) != end_time {
+            let old_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(current.end_time));
+            let new_jst = crate::time::utc_to_jst_string(end_time);
+            notes.push(format!("End: {} → {}", old_jst, new_jst));
+        }
+        if current.location != location {
+            let old_loc = current.location.unwrap_or("None".to_string());
+            let new_loc = location.clone().unwrap_or("None".to_string());
+            notes.push(format!("Location: {} → {}", old_loc, new_loc));
+        }
+
+        // Log the update
+        let log_notes = if notes.is_empty() {
+            "No changes".to_string()
+        } else {
+            format!("Reservation ID: {} - {}", reservation_id, notes.join(", "))
+        };
+
+        sqlx::query!(
+            "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+             VALUES (?, ?, 'Edited', ?, 'Confirmed', 'Confirmed', ?, CURRENT_TIMESTAMP)",
+            current.equipment_id,
+            current.user_id,
+            location,
+            log_notes
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to log reservation update: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn cancel_reservation(&self, reservation_id: i64, cancelling_user_id: i64) -> Result<(), String> {
+        // Start transaction
+        let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
+
+        // Get reservation details
+        let reservation = sqlx::query!(
+            "SELECT equipment_id, user_id FROM reservations WHERE id = ? AND status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or("Reservation not found or already cancelled")?;
+
+        // Cancel the reservation
+        sqlx::query!(
+            "UPDATE reservations SET status = 'Cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            reservation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to cancel reservation: {}", e))?;
+
+        // Log the cancellation
+        let is_self_cancel = reservation.user_id == cancelling_user_id;
+        let notes = if is_self_cancel {
+            format!("Reservation ID: {} - Cancelled by owner", reservation_id)
+        } else {
+            format!("Reservation ID: {} - Cancelled by admin <@{}>", reservation_id, cancelling_user_id)
+        };
+
+        sqlx::query!(
+            "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+             VALUES (?, ?, 'Cancelled', NULL, 'Confirmed', 'Cancelled', ?, CURRENT_TIMESTAMP)",
+            reservation.equipment_id,
+            cancelling_user_id,
+            notes
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to log reservation cancellation: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn get_reservation_channel_id(&self, guild_id: i64) -> Result<i64, sqlx::Error> {
+        let channel_id = sqlx::query_scalar!(
+            "SELECT reservation_channel_id FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        Ok(channel_id.unwrap_or(0))
     }
 }

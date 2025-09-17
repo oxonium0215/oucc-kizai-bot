@@ -1,9 +1,11 @@
 use anyhow::Result;
-use serenity::all::{ChannelId, Context, CreateEmbed, CreateMessage, Colour, MessageId};
+use serenity::all::{ChannelId, Context, CreateEmbed, CreateMessage, CreateActionRow, CreateButton, ButtonStyle, Colour, MessageId};
 use sqlx::{SqlitePool, Row};
 use tracing::{error, info, warn};
+use chrono::{Utc, NaiveDateTime};
 
-use crate::models::{Equipment, Tag};
+use crate::models::{Equipment, Tag, Reservation};
+use crate::time;
 
 /// Equipment visualization and management
 pub struct EquipmentRenderer {
@@ -85,7 +87,7 @@ impl EquipmentRenderer {
     }
 
     /// Create an embed for a single piece of equipment
-    pub fn create_equipment_embed(&self, equipment: &Equipment, tag: &Option<Tag>) -> CreateEmbed {
+    pub async fn create_equipment_embed(&self, equipment: &Equipment, tag: &Option<Tag>) -> Result<CreateEmbed> {
         let status_emoji = match equipment.status.as_str() {
             "Available" => "✅",
             "Loaned" => "🔒",
@@ -121,7 +123,110 @@ impl EquipmentRenderer {
             }
         }
 
-        embed
+        // Add reservation information
+        let current_reservation = self.get_current_or_next_reservation(equipment.id).await?;
+        if let Some(reservation) = current_reservation {
+            let start_jst = time::utc_to_jst_string(reservation.start_time);
+            let end_jst = time::utc_to_jst_string(reservation.end_time);
+            let user_mention = format!("<@{}>", reservation.user_id);
+            
+            let now = Utc::now();
+            if reservation.start_time <= now && now < reservation.end_time {
+                // Currently reserved
+                embed = embed.field("Currently Reserved", format!("By: {}\nUntil: {}", user_mention, end_jst), false);
+            } else {
+                // Future reservation
+                embed = embed.field("Next Reservation", format!("By: {}\nFrom: {} to {}", user_mention, start_jst, end_jst), false);
+            }
+        } else {
+            embed = embed.field("Availability", "Available for reservation", false);
+        }
+
+        Ok(embed)
+    }
+
+    /// Get the current or next upcoming reservation for equipment
+    async fn get_current_or_next_reservation(&self, equipment_id: i64) -> Result<Option<Reservation>> {
+        // Use regular query instead of query_as! to handle type conversions manually
+        let reservation_row = sqlx::query!(
+            "SELECT id, equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at
+             FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' AND end_time > CURRENT_TIMESTAMP
+             ORDER BY start_time ASC
+             LIMIT 1",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(row) = reservation_row {
+            // Helper function to convert NaiveDateTime to DateTime<Utc>
+            let to_utc_datetime = |naive: NaiveDateTime| -> chrono::DateTime<Utc> {
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
+            };
+
+            Ok(Some(Reservation {
+                id: row.id.unwrap_or(0),
+                equipment_id: row.equipment_id,
+                user_id: row.user_id,
+                start_time: to_utc_datetime(row.start_time),
+                end_time: to_utc_datetime(row.end_time),
+                location: row.location,
+                status: row.status,
+                created_at: to_utc_datetime(row.created_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
+                updated_at: to_utc_datetime(row.updated_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Create action buttons for equipment
+    async fn create_equipment_buttons(&self, equipment: &Equipment) -> Result<Vec<CreateActionRow>> {
+        let mut buttons = Vec::new();
+        
+        // Always show Reserve button for available equipment
+        if equipment.status == "Available" {
+            buttons.push(
+                CreateButton::new(format!("eq_reserve:{}", equipment.id))
+                    .label("📅 Reserve")
+                    .style(ButtonStyle::Primary)
+            );
+        }
+
+        // Check if there are any reservations for this equipment that users can edit/cancel
+        let user_reservations = sqlx::query!(
+            "SELECT id, user_id FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' AND end_time > CURRENT_TIMESTAMP
+             ORDER BY start_time ASC",
+            equipment.id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        // Add edit/cancel buttons for existing reservations (will be filtered by permissions in handlers)
+        for reservation in user_reservations {
+            if let Some(reservation_id) = reservation.id {
+                buttons.push(
+                    CreateButton::new(format!("res_edit:{}", reservation_id))
+                        .label("✏️ Edit")
+                        .style(ButtonStyle::Secondary)
+                );
+                buttons.push(
+                    CreateButton::new(format!("res_cancel:{}", reservation_id))
+                        .label("❌ Cancel")
+                        .style(ButtonStyle::Danger)
+                );
+                // Only show buttons for first reservation to avoid clutter
+                break;
+            }
+        }
+
+        if buttons.is_empty() {
+            Ok(vec![])
+        } else {
+            Ok(vec![CreateActionRow::Buttons(buttons)])
+        }
     }
 
     /// Render or update all equipment embeds in the channel
@@ -168,9 +273,17 @@ impl EquipmentRenderer {
 
         // Create new equipment embeds
         for (sort_order, (equipment, tag)) in equipment_list.iter().enumerate() {
-            let embed = self.create_equipment_embed(equipment, tag);
+            let embed = self.create_equipment_embed(equipment, tag).await?;
             
-            match channel.send_message(&ctx.http, CreateMessage::new().embed(embed)).await {
+            // Create buttons for equipment actions
+            let buttons = self.create_equipment_buttons(equipment).await?;
+            
+            let mut message_builder = CreateMessage::new().embed(embed);
+            if !buttons.is_empty() {
+                message_builder = message_builder.components(buttons);
+            }
+            
+            match channel.send_message(&ctx.http, message_builder).await {
                 Ok(message) => {
                     // Save the message reference
                     let message_id = message.id.get() as i64;
