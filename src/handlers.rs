@@ -130,9 +130,21 @@ impl Handler {
                 SetupCommand::handle_confirmation(ctx, interaction, &self.db, true).await?
             }
             "setup_cancel" => {
-                SetupCommand::handle_confirmation(ctx, interaction, &self.db, false).await?
+                SetupCommand::handle_setup_cancel(ctx, interaction, &self.db).await?
             }
-            "overall_management" => {
+            "setup_roles_select" => {
+                SetupCommand::handle_role_selection(ctx, interaction, &self.db).await?
+            }
+            "setup_roles_skip" => {
+                SetupCommand::handle_role_skip_or_next(ctx, interaction, &self.db, true).await?
+            }
+            "setup_roles_next" => {
+                SetupCommand::handle_role_skip_or_next(ctx, interaction, &self.db, false).await?
+            }
+            "setup_complete" => {
+                SetupCommand::handle_setup_complete(ctx, interaction, &self.db).await?
+            }
+            "overall_management" | "overall_mgmt_open" => {
                 self.handle_overall_management(ctx, interaction).await?
             }
             "mgmt_add_tag" => {

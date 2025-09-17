@@ -20,6 +20,38 @@ pub async fn is_admin(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Resu
     Ok(false)
 }
 
+/// Check if the bot has required permissions in a channel for setup
+pub async fn check_bot_permissions(ctx: &Context, channel_id: ChannelId) -> Result<Vec<String>> {
+    let channel = channel_id.to_channel(&ctx.http).await?;
+    let current_user_id = ctx.cache.current_user().id;
+    
+    let mut missing_permissions = Vec::new();
+
+    if let Some(guild_channel) = channel.guild() {
+        let guild_id = guild_channel.guild_id;
+        let member = guild_id.member(ctx, current_user_id).await?;
+        let permissions = guild_channel.permissions_for_user(ctx, &member)?;
+        
+        if !permissions.contains(Permissions::SEND_MESSAGES) {
+            missing_permissions.push("Send Messages".to_string());
+        }
+        if !permissions.contains(Permissions::VIEW_CHANNEL) {
+            missing_permissions.push("Read Messages/View Channel".to_string());
+        }
+        if !permissions.contains(Permissions::MANAGE_MESSAGES) {
+            missing_permissions.push("Manage Messages".to_string());
+        }
+        if !permissions.contains(Permissions::EMBED_LINKS) {
+            missing_permissions.push("Embed Links".to_string());
+        }
+        if !permissions.contains(Permissions::READ_MESSAGE_HISTORY) {
+            missing_permissions.push("Read Message History".to_string());
+        }
+    }
+
+    Ok(missing_permissions)
+}
+
 pub fn format_duration_minutes(minutes: i64) -> String {
     if minutes < 60 {
         format!("{}分", minutes)
