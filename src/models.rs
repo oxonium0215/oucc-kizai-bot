@@ -407,6 +407,8 @@ pub enum ReminderKind {
     Start,
     PreEnd,
     Overdue(u32), // Number for the overdue reminder sequence (1, 2, 3, etc.)
+    WaitlistOffer, // New offer available for waitlisted user
+    WaitlistOfferExpiring, // Offer expiring soon (optional feature)
 }
 
 impl ReminderKind {
@@ -416,6 +418,8 @@ impl ReminderKind {
             Self::Start => "START".to_string(),
             Self::PreEnd => "PRE_END".to_string(),
             Self::Overdue(n) => format!("OVERDUE_{}", n),
+            Self::WaitlistOffer => "WAITLIST_OFFER".to_string(),
+            Self::WaitlistOfferExpiring => "WAITLIST_OFFER_EXPIRING".to_string(),
         }
     }
 
@@ -424,6 +428,8 @@ impl ReminderKind {
             "PRE_START" => Some(Self::PreStart),
             "START" => Some(Self::Start),
             "PRE_END" => Some(Self::PreEnd),
+            "WAITLIST_OFFER" => Some(Self::WaitlistOffer),
+            "WAITLIST_OFFER_EXPIRING" => Some(Self::WaitlistOfferExpiring),
             s if s.starts_with("OVERDUE_") => {
                 let num_part = s.strip_prefix("OVERDUE_")?;
                 let num: u32 = num_part.parse().ok()?;

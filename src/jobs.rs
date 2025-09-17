@@ -46,6 +46,9 @@ impl JobWorker {
         // Process scheduled transfers first
         self.process_scheduled_transfers().await?;
 
+        // Process waitlist offer expirations
+        self.process_waitlist_expirations().await?;
+
         // Get pending jobs that are due
         let jobs: Vec<Job> = sqlx::query_as::<_, Job>(
             "SELECT * FROM jobs WHERE status = 'Pending' AND scheduled_for <= ? ORDER BY scheduled_for LIMIT 10"
@@ -85,6 +88,18 @@ impl JobWorker {
                 // Mark transfer as failed but don't stop processing others
                 let _ = self.mark_transfer_failed(&transfer).await;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Process waitlist offer expirations
+    async fn process_waitlist_expirations(&self) -> Result<()> {
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        
+        // Process expired offers
+        if let Err(e) = waitlist_manager.process_expired_offers().await {
+            error!("Failed to process waitlist expirations: {}", e);
         }
 
         Ok(())
@@ -223,6 +238,8 @@ impl JobWorker {
             "reminder" => self.process_reminder(job).await?,
             "transfer_timeout" => self.process_transfer_timeout(job).await?,
             "retry_dm" => self.process_retry_dm(job).await?,
+            "waitlist_offer_notification" => self.process_waitlist_offer_notification(job).await?,
+            "waitlist_expire_offers" => self.process_waitlist_expire_offers(job).await?,
             _ => {
                 warn!("Unknown job type: {}", job.job_type);
             }
@@ -617,5 +634,88 @@ impl JobWorker {
     /// Helper function to convert NaiveDateTime to DateTime<Utc>
     fn naive_datetime_to_utc(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
         DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)
+    }
+
+    /// Process waitlist offer notification job
+    async fn process_waitlist_offer_notification(&self, job: &Job) -> Result<()> {
+        let payload: serde_json::Value = serde_json::from_str(&job.payload)?;
+        
+        let offer_id = payload["offer_id"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("Missing offer_id in waitlist_offer_notification payload"))?;
+
+        let equipment_name = payload["equipment_name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing equipment_name in waitlist_offer_notification payload"))?;
+
+        let guild_id = payload["guild_id"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("Missing guild_id in waitlist_offer_notification payload"))?;
+
+        // Get the offer details
+        let offer_details = sqlx::query!(
+            "SELECT wo.waitlist_id, wo.offered_window_start_utc, wo.offered_window_end_utc, wo.offer_expires_at_utc,
+                    we.user_id, we.equipment_id
+             FROM waitlist_offers wo
+             JOIN waitlist_entries we ON wo.waitlist_id = we.id
+             WHERE wo.id = ? AND wo.status = 'pending'",
+            offer_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(offer) = offer_details {
+            let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+            let offer_result = crate::waitlist::WaitlistOfferResult {
+                offer_id,
+                waitlist_entry: crate::models::WaitlistEntry {
+                    id: offer.waitlist_id,
+                    guild_id,
+                    equipment_id: offer.equipment_id,
+                    user_id: offer.user_id,
+                    desired_start_utc: Self::naive_datetime_to_utc(offer.offered_window_start_utc.unwrap_or_default()),
+                    desired_end_utc: Self::naive_datetime_to_utc(offer.offered_window_end_utc.unwrap_or_default()),
+                    created_at_utc: Utc::now(), // Placeholder - not used in notification
+                    canceled_at_utc: None,
+                },
+                offered_start: Self::naive_datetime_to_utc(offer.offered_window_start_utc.unwrap_or_default()),
+                offered_end: Self::naive_datetime_to_utc(offer.offered_window_end_utc.unwrap_or_default()),
+                expires_at: Self::naive_datetime_to_utc(offer.offer_expires_at_utc.unwrap_or_default()),
+            };
+
+            // Send the notification
+            waitlist_manager.send_offer_notification(
+                &offer_result,
+                equipment_name,
+                guild_id,
+                self.discord_api.as_ref().map(|api| api.as_ref()),
+            ).await?;
+
+            info!("Sent waitlist offer notification for offer {}", offer_id);
+        } else {
+            warn!("Waitlist offer {} no longer exists or is not pending", offer_id);
+        }
+
+        Ok(())
+    }
+
+    /// Process expired waitlist offers and advance queue
+    async fn process_waitlist_expire_offers(&self, _job: &Job) -> Result<()> {
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        
+        // Process expired offers
+        let expired_offers = waitlist_manager.process_expired_offers().await?;
+        
+        if !expired_offers.is_empty() {
+            info!("Expired {} waitlist offers", expired_offers.len());
+            
+            // For each expired offer, we should try to create a new offer for the next person
+            // in the queue for the same equipment/time window. However, this is complex 
+            // because we need to reconstruct the available time window.
+            // For now, we just log the expiration. A more complete implementation would
+            // track the original availability window and retry with the next person.
+        }
+
+        Ok(())
     }
 }

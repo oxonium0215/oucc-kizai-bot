@@ -560,4 +560,198 @@ impl WaitlistManager {
 
         Ok(expired_ids)
     }
+
+    /// Send notification for a new waitlist offer
+    pub async fn send_offer_notification(
+        &self,
+        offer_result: &WaitlistOfferResult,
+        equipment_name: &str,
+        guild_id: i64,
+        discord_api: Option<&dyn crate::traits::DiscordApi>,
+    ) -> Result<()> {
+        let user_id = offer_result.waitlist_entry.user_id;
+        let offer_id = offer_result.offer_id;
+        
+        // Format message with JST times
+        let start_jst = crate::time::utc_to_jst_string(offer_result.offered_start);
+        let end_jst = crate::time::utc_to_jst_string(offer_result.offered_end);
+        let expires_jst = crate::time::utc_to_jst_string(offer_result.expires_at);
+
+        let message = format!(
+            "🎉 **Equipment Available!**\n\n**Equipment:** {}\n**Available Time:** {} to {} (JST)\n**Offer Expires:** {}\n\nYou have been waitlisted for this equipment and it's now available! Click the buttons below to accept or decline this offer.",
+            equipment_name, start_jst, end_jst, expires_jst
+        );
+
+        // Create action buttons for accept/decline
+        let accept_button = serenity::all::CreateButton::new(format!("wl_accept_{}", offer_id))
+            .label("Accept Offer")
+            .style(serenity::all::ButtonStyle::Success)
+            .emoji(serenity::all::ReactionType::Unicode("✅".to_string()));
+
+        let decline_button = serenity::all::CreateButton::new(format!("wl_decline_{}", offer_id))
+            .label("Decline Offer")
+            .style(serenity::all::ButtonStyle::Danger)
+            .emoji(serenity::all::ReactionType::Unicode("❌".to_string()));
+
+        let action_row = serenity::all::CreateActionRow::Buttons(vec![accept_button, decline_button]);
+
+        // Try to send DM first
+        if let Some(api) = discord_api {
+            let dm_result = api.send_direct_message(
+                user_id as u64,
+                &message,
+                Some(vec![action_row.clone()]),
+            ).await;
+
+            match dm_result {
+                Ok(_) => {
+                    // Log successful DM delivery
+                    self.log_offer_notification(offer_id, crate::models::DeliveryMethod::Dm).await?;
+                    info!("Sent waitlist offer notification via DM to user {}", user_id);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Failed to send DM to user {}: {}", user_id, e);
+                }
+            }
+        }
+
+        // Fallback to channel if DM failed
+        let guild_settings = sqlx::query!(
+            "SELECT dm_fallback_channel_enabled, reservation_channel_id FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(settings) = guild_settings {
+            if settings.dm_fallback_channel_enabled.unwrap_or(false) {
+                if let (Some(api), Some(channel_id)) = (discord_api, settings.reservation_channel_id) {
+                    let channel_message = format!(
+                        "<@{}> {}", user_id, message
+                    );
+
+                    let channel_result = api.send_channel_message(
+                        channel_id as u64,
+                        &channel_message,
+                        Some(vec![action_row]),
+                    ).await;
+
+                    match channel_result {
+                        Ok(_) => {
+                            self.log_offer_notification(offer_id, crate::models::DeliveryMethod::Channel).await?;
+                            info!("Sent waitlist offer notification via channel to user {}", user_id);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!("Failed to send channel message for user {}: {}", user_id, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Log failed delivery
+        self.log_offer_notification(offer_id, crate::models::DeliveryMethod::Failed).await?;
+        error!("Failed to deliver waitlist offer notification to user {}", user_id);
+
+        Ok(())
+    }
+
+    /// Log waitlist offer notification delivery
+    async fn log_offer_notification(
+        &self,
+        offer_id: i64,
+        delivery_method: crate::models::DeliveryMethod,
+    ) -> Result<()> {
+        let delivery_str = match delivery_method {
+            crate::models::DeliveryMethod::Dm => "DM",
+            crate::models::DeliveryMethod::Channel => "CHANNEL",
+            crate::models::DeliveryMethod::Failed => "FAILED",
+        };
+
+        // For waitlist offers, we use offer_id as a pseudo-reservation_id with negative value to distinguish
+        let pseudo_reservation_id = -(offer_id);
+
+        sqlx::query!(
+            "INSERT INTO sent_reminders (reservation_id, kind, delivery_method, sent_at_utc)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            pseudo_reservation_id,
+            crate::models::ReminderKind::WaitlistOffer.to_db_string(),
+            delivery_str
+        )
+        .execute(&self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Trigger waitlist processing when equipment becomes available
+    /// This is called from cancellation and return handlers
+    pub async fn trigger_waitlist_processing(
+        &self,
+        equipment_id: i64,
+        available_start: DateTime<Utc>,
+        available_end: DateTime<Utc>,
+        guild_id: i64,
+        discord_api: Option<&dyn crate::traits::DiscordApi>,
+    ) -> Result<()> {
+        // Get equipment name for notifications
+        let equipment = sqlx::query!(
+            "SELECT name FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let equipment_name = equipment
+            .map(|e| e.name.unwrap_or_default())
+            .unwrap_or_else(|| format!("Equipment #{}", equipment_id));
+
+        // Create offer for the next person in the waitlist
+        if let Some(offer_result) = self.create_offer_for_available_window(
+            equipment_id,
+            available_start,
+            available_end,
+            guild_id,
+        ).await? {
+            // Schedule notification job instead of sending directly
+            self.schedule_offer_notification(offer_result.offer_id, &equipment_name, guild_id).await?;
+            
+            info!("Created waitlist offer {} for equipment {} to user {}", 
+                  offer_result.offer_id, equipment_id, offer_result.waitlist_entry.user_id);
+        }
+
+        Ok(())
+    }
+
+    /// Schedule a notification job for a waitlist offer
+    async fn schedule_offer_notification(
+        &self,
+        offer_id: i64,
+        equipment_name: &str,
+        guild_id: i64,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "offer_id": offer_id,
+            "equipment_name": equipment_name,
+            "guild_id": guild_id
+        });
+
+        // Schedule immediately
+        let now = Utc::now();
+        
+        sqlx::query!(
+            "INSERT INTO jobs (job_type, payload, scheduled_for)
+             VALUES (?, ?, ?)",
+            "waitlist_offer_notification",
+            payload.to_string(),
+            now
+        )
+        .execute(&self.db)
+        .await?;
+
+        info!("Scheduled waitlist offer notification job for offer {}", offer_id);
+        Ok(())
+    }
 }

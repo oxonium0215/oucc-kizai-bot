@@ -2443,9 +2443,11 @@ impl Handler {
         // Start transaction
         let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
 
-        // Get reservation details
+        // Get reservation details including time window for waitlist processing
         let reservation = sqlx::query!(
-            "SELECT equipment_id, user_id FROM reservations WHERE id = ? AND status = 'Confirmed'",
+            "SELECT equipment_id, user_id, start_time, end_time, guild_id FROM reservations r
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
             reservation_id
         )
         .fetch_optional(&mut *tx)
@@ -2482,6 +2484,27 @@ impl Handler {
         .map_err(|e| format!("Failed to log reservation cancellation: {}", e))?;
 
         tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        // After successful cancellation, trigger waitlist processing
+        // Convert NaiveDateTime to DateTime<Utc> for waitlist processing
+        let start_time = Self::naive_datetime_to_utc(reservation.start_time);
+        let end_time = Self::naive_datetime_to_utc(reservation.end_time);
+        let guild_id = reservation.guild_id;
+
+        // Only process waitlist if the cancelled time is in the future
+        if end_time > chrono::Utc::now() {
+            let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+            if let Err(e) = waitlist_manager.trigger_waitlist_processing(
+                reservation.equipment_id,
+                start_time,
+                end_time,
+                guild_id,
+                None, // Discord API will be handled by the job system
+            ).await {
+                // Don't fail the cancellation if waitlist processing fails, just log it
+                tracing::warn!("Failed to process waitlist after cancellation: {}", e);
+            }
+        }
 
         Ok(())
     }
