@@ -83,8 +83,13 @@ pub struct TransferRequest {
     pub reservation_id: i64,
     pub from_user_id: i64,
     pub to_user_id: i64,
+    pub requested_by_user_id: i64,
+    pub execute_at_utc: Option<DateTime<Utc>>, // NULL for immediate transfers
+    pub note: Option<String>,
     pub expires_at: DateTime<Utc>,
-    pub status: String, // Pending, Accepted, Denied, Expired
+    pub status: String, // Pending, Accepted, Denied, Expired, Canceled
+    pub canceled_at_utc: Option<DateTime<Utc>>,
+    pub canceled_by_user_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -184,6 +189,7 @@ pub enum TransferStatus {
     Accepted,
     Denied,
     Expired,
+    Canceled,
 }
 
 impl From<String> for TransferStatus {
@@ -193,6 +199,7 @@ impl From<String> for TransferStatus {
             "Accepted" => Self::Accepted,
             "Denied" => Self::Denied,
             "Expired" => Self::Expired,
+            "Canceled" => Self::Canceled,
             _ => Self::Pending,
         }
     }
@@ -205,6 +212,7 @@ impl From<TransferStatus> for String {
             TransferStatus::Accepted => "Accepted".to_string(),
             TransferStatus::Denied => "Denied".to_string(),
             TransferStatus::Expired => "Expired".to_string(),
+            TransferStatus::Canceled => "Canceled".to_string(),
         }
     }
 }
