@@ -330,6 +330,33 @@ impl EquipmentRenderer {
             }
         }
 
+        // Admin-only maintenance buttons
+        // Note: Permission checking will be done in handlers
+        let has_maintenance = self.has_current_or_upcoming_maintenance(equipment.id).await.unwrap_or(false);
+        
+        if has_maintenance {
+            // Show edit/cancel buttons for existing maintenance
+            if let Ok(Some(maintenance)) = self.get_current_or_upcoming_maintenance(equipment.id).await {
+                buttons.push(
+                    CreateButton::new(format!("maint_edit_{}", maintenance.id))
+                        .label("🔧 Edit Maintenance")
+                        .style(ButtonStyle::Secondary)
+                );
+                buttons.push(
+                    CreateButton::new(format!("maint_cancel_{}", maintenance.id))
+                        .label("❌ Cancel Maintenance")
+                        .style(ButtonStyle::Danger)
+                );
+            }
+        } else {
+            // Show create maintenance button
+            buttons.push(
+                CreateButton::new(format!("maint_new_{}", equipment.id))
+                    .label("🔧 Maintenance")
+                    .style(ButtonStyle::Secondary)
+            );
+        }
+
         if buttons.is_empty() {
             Ok(vec![])
         } else {
@@ -554,4 +581,62 @@ impl EquipmentRenderer {
 
         Ok(())
     }
+
+    /// Check if equipment has current or upcoming maintenance
+    async fn has_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<bool> {
+        let now_utc = Utc::now().naive_utc();
+
+        let count = sqlx::query!(
+            "SELECT COUNT(*) as count FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND end_utc > ?",
+            equipment_id,
+            now_utc
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        Ok(count.count > 0)
+    }
+
+    /// Get current or next upcoming maintenance window for equipment
+    async fn get_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<Option<crate::models::MaintenanceWindow>> {
+        let now_utc = Utc::now().naive_utc();
+
+        let maintenance_row = sqlx::query!(
+            "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, created_at_utc, canceled_at_utc, canceled_by_user_id
+             FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND end_utc > ?
+             ORDER BY start_utc ASC
+             LIMIT 1",
+            equipment_id,
+            now_utc
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(row) = maintenance_row {
+            use crate::models::MaintenanceWindow;
+            let maintenance = MaintenanceWindow {
+                id: row.id,
+                equipment_id: row.equipment_id,
+                start_utc: to_utc_datetime(row.start_utc),
+                end_utc: to_utc_datetime(row.end_utc),
+                reason: row.reason,
+                created_by_user_id: row.created_by_user_id,
+                created_at_utc: to_utc_datetime(row.created_at_utc.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+                canceled_at_utc: row.canceled_at_utc.map(to_utc_datetime),
+                canceled_by_user_id: row.canceled_by_user_id,
+            };
+            Ok(Some(maintenance))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// Helper function to convert NaiveDateTime to DateTime<Utc>
+fn to_utc_datetime(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
 }

@@ -2116,7 +2116,7 @@ impl Handler {
         // Start transaction for conflict detection
         let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
 
-        // Check for conflicts
+        // Check for conflicts with existing reservations
         let conflicts = sqlx::query!(
             "SELECT id, user_id, start_time, end_time FROM reservations 
              WHERE equipment_id = ? AND status = 'Confirmed' 
@@ -2136,6 +2136,30 @@ impl Handler {
             return Err(format!(
                 "Reservation conflicts with existing booking by <@{}> from {} to {}",
                 conflict.user_id, start_jst, end_jst
+            ));
+        }
+
+        // Check for conflicts with maintenance windows
+        let maintenance_conflicts = sqlx::query!(
+            "SELECT id, start_utc, end_utc, reason FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND start_utc < ? AND end_utc > ?",
+            equipment_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+
+        if !maintenance_conflicts.is_empty() {
+            let maintenance = &maintenance_conflicts[0];
+            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.start_utc));
+            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.end_utc));
+            let reason_text = maintenance.reason.as_deref().unwrap_or("Equipment maintenance");
+            return Err(format!(
+                "Reservation conflicts with scheduled maintenance ({}) from {} to {}. Please choose a different time.",
+                reason_text, start_jst, end_jst
             ));
         }
 
@@ -2215,6 +2239,30 @@ impl Handler {
             return Err(format!(
                 "Updated reservation would conflict with existing booking by <@{}> from {} to {}",
                 conflict.user_id, start_jst, end_jst
+            ));
+        }
+
+        // Check for conflicts with maintenance windows
+        let maintenance_conflicts = sqlx::query!(
+            "SELECT id, start_utc, end_utc, reason FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND start_utc < ? AND end_utc > ?",
+            current.equipment_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+
+        if !maintenance_conflicts.is_empty() {
+            let maintenance = &maintenance_conflicts[0];
+            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.start_utc));
+            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(maintenance.end_utc));
+            let reason_text = maintenance.reason.as_deref().unwrap_or("Equipment maintenance");
+            return Err(format!(
+                "Updated reservation would conflict with scheduled maintenance ({}) from {} to {}. Please choose a different time.",
+                reason_text, start_jst, end_jst
             ));
         }
 
