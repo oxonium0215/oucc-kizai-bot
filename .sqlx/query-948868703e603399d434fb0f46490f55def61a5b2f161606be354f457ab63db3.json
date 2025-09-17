@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, user_id, start_time, end_time FROM reservations \n             WHERE equipment_id = ? AND status = 'Confirmed' \n             AND start_time < ? AND end_time > ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "user_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "start_time",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_time",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "948868703e603399d434fb0f46490f55def61a5b2f161606be354f457ab63db3"
+}

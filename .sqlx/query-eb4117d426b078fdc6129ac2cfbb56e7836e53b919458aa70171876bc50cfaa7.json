@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT equipment_id, user_id FROM reservations WHERE id = ? AND status = 'Confirmed'",
+  "describe": {
+    "columns": [
+      {
+        "name": "equipment_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "user_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "eb4117d426b078fdc6129ac2cfbb56e7836e53b919458aa70171876bc50cfaa7"
+}
