@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE maintenance_windows \n             SET canceled_at_utc = ?, canceled_by_user_id = ?\n             WHERE id = ? AND canceled_at_utc IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3d7a47d691416ba9096dbed0000866ca8c449a951a7039a4d21d208aefcb3339"
+}

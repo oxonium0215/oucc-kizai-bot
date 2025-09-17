@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, created_at_utc, canceled_at_utc, canceled_by_user_id\n             FROM maintenance_windows \n             WHERE equipment_id = ? AND canceled_at_utc IS NULL\n             AND end_utc > ?\n             ORDER BY start_utc ASC\n             LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "equipment_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "start_utc",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_utc",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "reason",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_by_user_id",
+        "ordinal": 5,
+        "type_info": "Int64"
+      },
+      {
+        "name": "created_at_utc",
+        "ordinal": 6,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "canceled_at_utc",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "canceled_by_user_id",
+        "ordinal": 8,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "400ef2cd05ab75947b179884b4b568667e6a397e094673ff67005b2fbaf9f5df"
+}

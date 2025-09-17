@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, start_utc, end_utc FROM maintenance_windows \n             WHERE equipment_id = ? AND canceled_at_utc IS NULL\n             AND start_utc < ? AND end_utc > ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "start_utc",
+        "ordinal": 1,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_utc",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e526b6275d1274fe7c5b573c22d9ef15afab2608dc3bf2335556679d6cee05c0"
+}

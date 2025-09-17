@@ -3,7 +3,7 @@ use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use serenity::all::ComponentInteractionDataKind;
-use sqlx::SqlitePool;
+use sqlx::{SqlitePool, Row};
 use tracing::{error, info};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -5860,9 +5860,9 @@ impl Handler {
             for action_row in &component.components {
                 if let serenity::all::ActionRowComponent::InputText(input) = action_row {
                     match input.custom_id.as_str() {
-                        "start_time" => start_time_str = input.value.clone(),
-                        "end_time" => end_time_str = input.value.clone(),
-                        "reason" => reason = input.value.clone(),
+                        "start_time" => start_time_str = input.value.clone().unwrap_or_default(),
+                        "end_time" => end_time_str = input.value.clone().unwrap_or_default(),
+                        "reason" => reason = input.value.clone().unwrap_or_default(),
                         _ => {}
                     }
                 }
@@ -5890,8 +5890,8 @@ impl Handler {
             equipment_id_str => {
                 if let Ok(equipment_id) = equipment_id_str.parse::<i64>() {
                     // Create new maintenance window
-                    match self.create_maintenance_window_helper(equipment_id, start_utc, end_utc, reason_opt, user_id).await {
-                        Ok(maintenance_id) => {
+                    match self.create_maintenance_window_helper(equipment_id, start_utc, end_utc, reason_opt.clone(), user_id).await {
+                        Ok(_maintenance_id) => {
                             // Get equipment name for response
                             let equipment_row = sqlx::query("SELECT name FROM equipment WHERE id = ?")
                                 .bind(equipment_id)
@@ -5909,7 +5909,7 @@ impl Handler {
                                         equipment_name,
                                         start_jst,
                                         end_jst,
-                                        if let Some(r) = reason_opt { format!("\n📝 **Reason:** {}", r) } else { String::new() }
+                                        if let Some(r) = &reason_opt { format!("\n📝 **Reason:** {}", r) } else { String::new() }
                                     ))
                                     .ephemeral(true),
                             );
@@ -5931,7 +5931,7 @@ impl Handler {
                 } else if parts.len() >= 3 && parts[1] == "edit" {
                     // Edit existing maintenance window
                     if let Ok(maintenance_id) = parts[2].parse::<i64>() {
-                        match self.update_maintenance_window_helper(maintenance_id, start_utc, end_utc, reason_opt, user_id).await {
+                        match self.update_maintenance_window_helper(maintenance_id, start_utc, end_utc, reason_opt.clone(), user_id).await {
                             Ok(equipment_name) => {
                                 let start_jst = crate::time::utc_to_jst_string(start_utc);
                                 let end_jst = crate::time::utc_to_jst_string(end_utc);
@@ -5943,7 +5943,7 @@ impl Handler {
                                             equipment_name,
                                             start_jst,
                                             end_jst,
-                                            if let Some(r) = reason_opt { format!("\n📝 **Reason:** {}", r) } else { String::new() }
+                                            if let Some(r) = &reason_opt { format!("\n📝 **Reason:** {}", r) } else { String::new() }
                                         ))
                                         .ephemeral(true),
                                 );
