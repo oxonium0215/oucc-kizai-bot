@@ -387,6 +387,18 @@ impl Handler {
                     self.handle_maintenance_edit(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("maint_cancel_") {
                     self.handle_maintenance_cancel(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("wl_join_") {
+                    self.handle_waitlist_join(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("wl_leave_") {
+                    self.handle_waitlist_leave(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("wl_accept_") {
+                    self.handle_waitlist_accept(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("wl_decline_") {
+                    self.handle_waitlist_decline(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("wl_view_") {
+                    self.handle_waitlist_view(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_wl_") {
+                    self.handle_waitlist_management(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -2239,6 +2251,18 @@ impl Handler {
             ));
         }
 
+        // Check for conflicts with waitlist holds
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        if let Ok(Some(hold_offer)) = waitlist_manager.check_waitlist_hold(equipment_id, start_time, end_time, Some(user_id)).await {
+            let start_jst = crate::time::utc_to_jst_string(hold_offer.offered_window_start_utc);
+            let end_jst = crate::time::utc_to_jst_string(hold_offer.offered_window_end_utc);
+            let expires_jst = crate::time::utc_to_jst_string(hold_offer.offer_expires_at_utc);
+            return Err(format!(
+                "Time slot is temporarily held for another user's waitlist offer from {} to {} (expires: {}). Please try again later or choose a different time.",
+                start_jst, end_jst, expires_jst
+            ));
+        }
+
         // Create reservation
         let result = sqlx::query!(
             "INSERT INTO reservations (equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at)
@@ -2806,12 +2830,35 @@ impl Handler {
                     interaction.create_response(&ctx.http, response).await?;
                 }
                 Err(err_msg) => {
-                    let response = serenity::all::CreateInteractionResponse::UpdateMessage(
-                        serenity::all::CreateInteractionResponseMessage::new()
-                            .content(format!("❌ **Failed to Create Reservation**\n\n{}", err_msg))
-                            .components(vec![]),
-                    );
-                    interaction.create_response(&ctx.http, response).await?;
+                    // Check if this is a conflict error - if so, offer to join waitlist
+                    let is_conflict = err_msg.contains("conflicts with") || err_msg.contains("temporarily held");
+                    
+                    if is_conflict {
+                        let start_ts = start.timestamp();
+                        let end_ts = end.timestamp();
+                        let custom_id = format!("wl_join_{}_{}_{}_{}", equipment_id, user_id, start_ts, end_ts);
+                        
+                        let join_waitlist_button = serenity::all::CreateButton::new(custom_id)
+                            .label("Join Waitlist")
+                            .style(serenity::all::ButtonStyle::Primary)
+                            .emoji(serenity::all::ReactionType::Unicode("📋".to_string()));
+
+                        let action_row = serenity::all::CreateActionRow::Buttons(vec![join_waitlist_button]);
+
+                        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                            serenity::all::CreateInteractionResponseMessage::new()
+                                .content(format!("❌ **Reservation Conflict**\n\n{}\n\n💡 **Alternative:** You can join the waitlist for this time slot. You'll be automatically notified when it becomes available!", err_msg))
+                                .components(vec![action_row]),
+                        );
+                        interaction.create_response(&ctx.http, response).await?;
+                    } else {
+                        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                            serenity::all::CreateInteractionResponseMessage::new()
+                                .content(format!("❌ **Failed to Create Reservation**\n\n{}", err_msg))
+                                .components(vec![]),
+                        );
+                        interaction.create_response(&ctx.http, response).await?;
+                    }
                 }
             }
         } else {
@@ -6241,5 +6288,381 @@ impl Handler {
         
         let equipment_name: String = equipment_row.get("name");
         Ok(equipment_name)
+    }
+
+    // Waitlist handler methods
+    async fn handle_waitlist_join(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Parse custom_id: wl_join_{equipment_id}_{user_id}_{start_ts}_{end_ts}
+        let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+        if parts.len() != 6 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid waitlist join request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let equipment_id: i64 = parts[2].parse().unwrap_or(0);
+        let target_user_id: i64 = parts[3].parse().unwrap_or(0);
+        let start_ts: i64 = parts[4].parse().unwrap_or(0);
+        let end_ts: i64 = parts[5].parse().unwrap_or(0);
+
+        let user_id = interaction.user.id.get() as i64;
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+
+        // Verify the user is joining their own waitlist
+        if user_id != target_user_id {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You can only join your own waitlist.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let start_time = DateTime::<Utc>::from_timestamp(start_ts, 0).unwrap_or(Utc::now());
+        let end_time = DateTime::<Utc>::from_timestamp(end_ts, 0).unwrap_or(Utc::now());
+
+        // Join waitlist
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        match waitlist_manager.join_waitlist(guild_id, equipment_id, user_id, start_time, end_time).await {
+            Ok(crate::waitlist::WaitlistJoinResult::Success(entry_id)) => {
+                let start_jst = crate::time::utc_to_jst_string(start_time);
+                let end_jst = crate::time::utc_to_jst_string(end_time);
+
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ **Successfully Joined Waitlist!**\n\n📋 **Entry ID:** {}\n📅 **Desired Time:** {} to {} (JST)\n\n🔔 You'll be notified via DM when this time slot becomes available. Your position in the queue is based on when you joined the waitlist.",
+                            entry_id, start_jst, end_jst
+                        ))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Ok(crate::waitlist::WaitlistJoinResult::AlreadyExists(existing_id)) => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "ℹ️ **Already on Waitlist**\n\nYou already have an active waitlist entry (ID: {}) for this equipment and time window.",
+                            existing_id
+                        ))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Ok(crate::waitlist::WaitlistJoinResult::InvalidTimeWindow(msg)) => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ **Invalid Time Window**\n\n{}", msg))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            _ => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Failed to join waitlist**\n\nPlease try again later.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_waitlist_leave(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Parse custom_id: wl_leave_{waitlist_id}
+        let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+        if parts.len() != 3 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid waitlist leave request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let waitlist_id: i64 = parts[2].parse().unwrap_or(0);
+        let user_id = interaction.user.id.get() as i64;
+
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        match waitlist_manager.leave_waitlist(waitlist_id, user_id).await {
+            Ok(true) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("✅ **Left Waitlist Successfully**\n\nYou have been removed from the waitlist.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Ok(false) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Waitlist entry not found or already cancelled.**")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Failed to leave waitlist**\n\nPlease try again later.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_waitlist_accept(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Parse custom_id: wl_accept_{offer_id}
+        let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+        if parts.len() != 3 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid offer acceptance request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let offer_id: i64 = parts[2].parse().unwrap_or(0);
+        let user_id = interaction.user.id.get() as i64;
+
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        match waitlist_manager.accept_offer(offer_id, user_id).await {
+            Ok(Some(reservation_id)) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ **Offer Accepted Successfully!**\n\n🆔 **Reservation ID:** {}\n\nYour reservation has been created and you have been removed from the waitlist.",
+                            reservation_id
+                        ))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Ok(None) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Offer no longer available**\n\nThis offer has expired or is no longer valid.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Failed to accept offer**\n\nPlease try again later.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_waitlist_decline(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Parse custom_id: wl_decline_{offer_id}
+        let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+        if parts.len() != 3 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid offer decline request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let offer_id: i64 = parts[2].parse().unwrap_or(0);
+        let user_id = interaction.user.id.get() as i64;
+
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        match waitlist_manager.decline_offer(offer_id, user_id).await {
+            Ok(true) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("✅ **Offer Declined**\n\nYou have declined this waitlist offer. The next person in the queue will be notified.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Ok(false) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Offer not found or already processed.**")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(_) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ **Failed to decline offer**\n\nPlease try again later.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_waitlist_view(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Parse custom_id: wl_view_{equipment_id}
+        let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+        if parts.len() != 3 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid waitlist view request.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let equipment_id: i64 = parts[2].parse().unwrap_or(0);
+        let user_id = interaction.user.id.get() as i64;
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+
+        let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+        
+        // Get user's waitlist entries for this equipment
+        let user_entries = waitlist_manager.get_user_waitlist_entries(guild_id, user_id).await?;
+        let equipment_entries: Vec<_> = user_entries.into_iter()
+            .filter(|entry| entry.equipment_id == equipment_id)
+            .collect();
+
+        let mut content = "📋 **Your Waitlist Entries for this Equipment**\n\n".to_string();
+
+        if equipment_entries.is_empty() {
+            content.push_str("You have no active waitlist entries for this equipment.");
+        } else {
+            for entry in equipment_entries {
+                let start_jst = crate::time::utc_to_jst_string(entry.desired_start_utc);
+                let end_jst = crate::time::utc_to_jst_string(entry.desired_end_utc);
+                let created_jst = crate::time::utc_to_jst_string(entry.created_at_utc);
+                
+                content.push_str(&format!(
+                    "🆔 **Entry ID:** {}\n📅 **Desired Time:** {} to {} (JST)\n🕐 **Joined:** {}\n\n",
+                    entry.id, start_jst, end_jst, created_jst
+                ));
+            }
+        }
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(content)
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+
+        Ok(())
+    }
+
+    async fn handle_waitlist_management(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Parse custom_id for specific management actions
+        let action = if interaction.data.custom_id.starts_with("mgmt_wl_cancel_") {
+            "cancel"
+        } else if interaction.data.custom_id.starts_with("mgmt_wl_offer_") {
+            "offer"
+        } else {
+            "view"
+        };
+
+        match action {
+            "cancel" => {
+                // Handle admin cancel waitlist entry
+                let parts: Vec<&str> = interaction.data.custom_id.split('_').collect();
+                if parts.len() >= 4 {
+                    let waitlist_id: i64 = parts[3].parse().unwrap_or(0);
+                    let waitlist_manager = crate::waitlist::WaitlistManager::new(self.db.clone());
+                    
+                    match waitlist_manager.admin_cancel_waitlist(waitlist_id).await {
+                        Ok(true) => {
+                            let response = serenity::all::CreateInteractionResponse::Message(
+                                serenity::all::CreateInteractionResponseMessage::new()
+                                    .content(format!("✅ **Waitlist entry {} cancelled successfully.**", waitlist_id))
+                                    .ephemeral(true),
+                            );
+                            interaction.create_response(&ctx.http, response).await?;
+                        }
+                        _ => {
+                            let response = serenity::all::CreateInteractionResponse::Message(
+                                serenity::all::CreateInteractionResponseMessage::new()
+                                    .content("❌ Failed to cancel waitlist entry.")
+                                    .ephemeral(true),
+                            );
+                            interaction.create_response(&ctx.http, response).await?;
+                        }
+                    }
+                }
+            }
+            _ => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("🚧 **Waitlist Management**\n\nAdvanced waitlist management features are coming soon!")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
     }
 }
