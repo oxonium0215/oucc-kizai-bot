@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, r.status, r.created_at, r.updated_at, r.returned_at, r.return_location \n             FROM reservations r \n             JOIN equipment e ON r.equipment_id = e.id \n             WHERE e.guild_id = ? AND r.status = 'Confirmed'\n             ORDER BY r.start_time ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "equipment_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "user_id",
+        "ordinal": 2,
+        "type_info": "Int64"
+      },
+      {
+        "name": "start_time",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_time",
+        "ordinal": 4,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "location",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "returned_at",
+        "ordinal": 9,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "return_location",
+        "ordinal": 10,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8427484d04a278e03963630148ba506a36557f37c05d82d0d7fb4b670d9ecdd8"
+}
