@@ -192,6 +192,18 @@ impl EquipmentRenderer {
             embed = embed.field("Category", &tag.name, true);
         }
 
+        // Add equipment class information
+        if let Some(class_id) = equipment.class_id {
+            if let Some(class) = self.get_equipment_class(class_id).await? {
+                let class_display = if let Some(emoji) = &class.emoji {
+                    format!("{} {}", emoji, class.name)
+                } else {
+                    class.name.clone()
+                };
+                embed = embed.field("Class", class_display, true);
+            }
+        }
+
         if let Some(location) = &equipment.current_location {
             embed = embed.field("Current Location", location, true);
         } else if let Some(default_location) = &equipment.default_return_location {
@@ -651,6 +663,33 @@ impl EquipmentRenderer {
                 canceled_by_user_id: row.get("canceled_by_user_id"),
             };
             Ok(Some(maintenance))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get equipment class by ID
+    async fn get_equipment_class(&self, class_id: i64) -> Result<Option<crate::models::EquipmentClass>> {
+        let class_row = sqlx::query!(
+            "SELECT id, guild_id, name, emoji, description, created_at_utc 
+             FROM equipment_classes 
+             WHERE id = ?",
+            class_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(row) = class_row {
+            use crate::models::EquipmentClass;
+            let class = EquipmentClass {
+                id: row.id,
+                guild_id: row.guild_id,
+                name: row.name,
+                emoji: row.emoji,
+                description: row.description,
+                created_at_utc: to_utc_datetime(row.created_at_utc),
+            };
+            Ok(Some(class))
         } else {
             Ok(None)
         }
