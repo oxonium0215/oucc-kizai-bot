@@ -6,6 +6,7 @@ A comprehensive Discord bot for managing equipment reservations and lending in t
 
 - **Setup Command**: `/setup` to configure the bot in any channel
 - **Interactive Reservations**: Visual reservation system with modal forms and real-time conflict detection
+- **Owner Transfer**: Transfer reservations between users with immediate and scheduled options
 - **Managed Reservation Channels**: Fully automated equipment display with user message auto-deletion
 - **Minimal API Updates**: Intelligent message editing minimizes Discord API usage and preserves message history  
 - **Time Zone Support**: All times displayed in JST (UTC+9) with automatic UTC conversion for storage
@@ -275,6 +276,69 @@ LOG_LEVEL=info                       # Default: info
 3. **Cancel Reservations**: Click the "❌ Cancel" button on your reservations
    - Cancellations are immediate and free up the equipment for others
 
+#### Owner Transfer
+
+Transfer ownership of your reservations to other users with flexible timing options.
+
+**Access Points:**
+- **Equipment Embeds**: "🔄 Transfer" button (shown when you own active/upcoming reservations for that equipment)
+- **Overall Management Panel**: "🔄 Transfer #N" buttons for each reservation (admin-only for others' reservations)
+
+**Transfer Types:**
+
+1. **Immediate Transfer**
+   - Transfers ownership instantly upon confirmation
+   - Target user becomes the new reservation owner immediately
+   - Equipment embeds refresh automatically
+
+2. **Scheduled Transfer**
+   - Schedule the transfer for a specific future time
+   - Enter execution time in JST format: `YYYY-MM-DD HH:MM`
+   - Transfer executes automatically at the scheduled time
+   - Can be cancelled before execution
+
+**Transfer Process:**
+1. Click any "🔄 Transfer" button on equipment with your reservations
+2. Enter the Discord User ID of the new owner
+3. Choose transfer type: `immediate` or `schedule`
+4. For scheduled transfers: specify execution time in JST
+5. Optional: Add a note explaining the transfer
+6. Confirm to execute (immediate) or schedule the transfer
+
+**Permissions:**
+- **Reservation Owners**: Can transfer their own reservations
+- **Administrators**: Can transfer any user's reservations
+- **Target Users**: Must be guild members (not bots)
+- **No-op Prevention**: Cannot transfer to the same user
+
+**Validation & Constraints:**
+- **Timing**: Scheduled transfers must be within `[max(now, reservation_start), reservation_end)`
+- **Status**: Cannot transfer returned reservations
+- **Conflicts**: Cannot create multiple pending transfers for the same reservation
+- **Expiry**: Scheduled transfers are automatically cancelled if reservation ends first
+
+**Cancellation:**
+- **Who**: Original requester or administrators can cancel scheduled transfers
+- **When**: Any time before execution
+- **How**: Click "🚫 Cancel Transfer" button on the transfer confirmation message
+
+**Examples:**
+
+*Immediate handoff when leaving early:*
+1. Click "🔄 Transfer" on your active reservation
+2. Enter colleague's Discord User ID
+3. Type: `immediate`
+4. Note: `Leaving early, please take over`
+5. Confirm → Transfer happens instantly
+
+*Scheduled handoff for shift change:*
+1. Click "🔄 Transfer" on your upcoming reservation  
+2. Enter replacement user's Discord User ID
+3. Type: `schedule`
+4. Time: `2024-01-15 14:00` (shift change time)
+5. Note: `Afternoon shift handover`
+6. Confirm → Transfer scheduled for execution
+
 #### Time Format & Validation
 
 - **Input Format**: `YYYY-MM-DD HH:MM` (24-hour format in JST)
@@ -319,6 +383,7 @@ The Overall Management panel provides a comprehensive dashboard for equipment ad
 **Reservation Listings**
 - Paginated view of filtered reservations (10 per page)
 - Compact format: `[Equipment] start_jst → end_jst, @user • status • location`
+- **Quick Actions**: Transfer buttons for each reservation (🔄 Transfer #N)
 - Navigation: Previous/Next page controls when needed
 
 **Filter Controls**
@@ -546,6 +611,29 @@ If messages get out of sync:
 - Verify the bot has required permissions in the target channel
 - Check if the bot's role is above other roles it needs to manage
 - Ensure Discord intents are properly configured
+
+**Transfer-related issues:**
+
+*"Cannot transfer to a bot user":*
+- Only human users (guild members) can receive transfers
+- Verify the target User ID belongs to a real user, not a bot
+
+*"Transfer request already pending":*
+- Only one pending transfer is allowed per reservation
+- Cancel the existing transfer or wait for it to be resolved/expired
+
+*"Invalid time format for scheduled transfer":*
+- Use exactly this format: `YYYY-MM-DD HH:MM` in JST
+- Example: `2024-01-15 14:30` for January 15th, 2:30 PM JST
+- Ensure time is within the reservation period
+
+*"Cannot transfer to the same user":*
+- No-op transfers (to the same owner) are prevented
+- Check that you entered a different user's Discord ID
+
+*"Scheduled transfer was cancelled":*
+- Transfers are auto-cancelled if the reservation is returned or ends before execution
+- Check if the reservation was cancelled or returned by the original owner
 
 **Database issues:**
 - Check file permissions for SQLite database
