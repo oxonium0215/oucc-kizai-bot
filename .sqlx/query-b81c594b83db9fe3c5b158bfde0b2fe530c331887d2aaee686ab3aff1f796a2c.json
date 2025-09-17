@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO guilds \n                 (id, reservation_channel_id, admin_roles, dm_fallback_channel_enabled,\n                  pre_start_minutes, pre_end_minutes, overdue_repeat_hours, overdue_max_count)\n                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "b81c594b83db9fe3c5b158bfde0b2fe530c331887d2aaee686ab3aff1f796a2c"
+}

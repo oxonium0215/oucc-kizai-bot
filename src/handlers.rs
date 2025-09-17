@@ -271,6 +271,12 @@ impl Handler {
             "setup_complete" => {
                 SetupCommand::handle_setup_complete(ctx, interaction, &self.db).await?
             }
+            "notification_preferences" => {
+                SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
+            }
+            "notification_next" => {
+                SetupCommand::handle_notification_next(ctx, interaction, &self.db).await?
+            }
             "overall_management" | "overall_mgmt_open" => {
                 self.handle_overall_management(ctx, interaction).await?
             }

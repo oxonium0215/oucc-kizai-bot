@@ -3,6 +3,7 @@ use serenity::all::{
     ButtonStyle, ChannelId, CommandInteraction, ComponentInteraction, CreateActionRow,
     CreateButton, CreateCommand, CreateEmbed, CreateInteractionResponse,
     CreateInteractionResponseMessage, Permissions, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, ComponentInteractionDataKind,
 };
 use serenity::model::colour::Colour;
 use serenity::model::prelude::*;
@@ -23,6 +24,12 @@ struct SetupWizardState {
     channel_id: ChannelId,
     user_id: UserId,
     selected_roles: Vec<RoleId>,
+    // Notification preferences
+    dm_fallback_enabled: bool,
+    pre_start_minutes: i64,
+    pre_end_minutes: i64,
+    overdue_repeat_hours: i64,
+    overdue_max_count: i64,
 }
 
 lazy_static::lazy_static! {
@@ -137,6 +144,12 @@ impl SetupCommand {
                 channel_id,
                 user_id,
                 selected_roles: Vec::new(),
+                // Default notification preferences
+                dm_fallback_enabled: true,
+                pre_start_minutes: 15,
+                pre_end_minutes: 15,
+                overdue_repeat_hours: 12,
+                overdue_max_count: 3,
             });
         }
 
@@ -342,6 +355,178 @@ impl SetupCommand {
             }
         };
 
+        // Show notification preferences step
+        Self::show_notification_preferences_step(ctx, interaction, db, &state, &selected_roles).await
+    }
+
+    async fn show_notification_preferences_step(
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        _db: &SqlitePool,
+        state: &SetupWizardState,
+        selected_roles: &[RoleId],
+    ) -> Result<()> {
+        // Update state with selected roles and initialize notification preferences
+        {
+            let mut states = SETUP_STATES.lock().await;
+            if let Some(current_state) = states.get_mut(&state.user_id) {
+                current_state.selected_roles = selected_roles.to_vec();
+                // Set default notification preferences
+                current_state.dm_fallback_enabled = true;
+                current_state.pre_start_minutes = 15;
+                current_state.pre_end_minutes = 15;
+                current_state.overdue_repeat_hours = 12;
+                current_state.overdue_max_count = 3;
+            }
+        }
+
+        let embed = CreateEmbed::new()
+            .title("🔧 Setup - Step 3: Notification Preferences")
+            .description("Configure reminder notifications for equipment lending:")
+            .field(
+                "📱 DM Fallback",
+                "When DMs fail, send mentions in the reservation channel",
+                false,
+            )
+            .field(
+                "⏰ Pre-Start Reminder",
+                "Notify users before their reservation starts (default: 15 minutes)",
+                false,
+            )
+            .field(
+                "🔔 Pre-End Reminder", 
+                "Notify users before their reservation ends (default: 15 minutes)",
+                false,
+            )
+            .field(
+                "⚠️ Overdue Reminders",
+                "Repeat notifications for unreturned items (default: every 12 hours, max 3 times)",
+                false,
+            )
+            .footer(serenity::all::CreateEmbedFooter::new("Current settings shown are defaults. Click buttons to adjust or Next to continue."))
+            .color(Colour::BLURPLE);
+
+        let select_menu = CreateSelectMenu::new(
+            "notification_preferences",
+            CreateSelectMenuKind::String {
+                options: vec![
+                    CreateSelectMenuOption::new("DM Fallback: Enabled", "dm_fallback_true")
+                        .description("Send channel mentions when DMs fail")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("DM Fallback: Disabled", "dm_fallback_false")
+                        .description("Only send DMs, no channel fallback"),
+                    CreateSelectMenuOption::new("Pre-Start: 5 minutes", "pre_start_5"),
+                    CreateSelectMenuOption::new("Pre-Start: 15 minutes", "pre_start_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Pre-Start: 30 minutes", "pre_start_30"),
+                    CreateSelectMenuOption::new("Pre-End: 5 minutes", "pre_end_5"),
+                    CreateSelectMenuOption::new("Pre-End: 15 minutes", "pre_end_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Pre-End: 30 minutes", "pre_end_30"),
+                    CreateSelectMenuOption::new("Overdue: Every 6 hours", "overdue_6h"),
+                    CreateSelectMenuOption::new("Overdue: Every 12 hours", "overdue_12h")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Overdue: Every 24 hours", "overdue_24h"),
+                ],
+            },
+        )
+        .placeholder("Select notification preferences to modify")
+        .min_values(0)
+        .max_values(4);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("notification_next")
+                .label("➡️ Next")
+                .style(ButtonStyle::Primary),
+            CreateButton::new("setup_cancel")
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let components = vec![
+            CreateActionRow::SelectMenu(select_menu),
+            buttons,
+        ];
+
+        let response = CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .embeds(vec![embed])
+                .components(components),
+        );
+
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    pub async fn handle_notification_preferences(
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        _db: &SqlitePool,
+    ) -> Result<()> {
+        let user_id = interaction.user.id;
+        let values = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            values.clone()
+        } else {
+            return Ok(());
+        };
+
+        // Update notification preferences in state
+        {
+            let mut states = SETUP_STATES.lock().await;
+            if let Some(state) = states.get_mut(&user_id) {
+                for value in &values {
+                    match value.as_str() {
+                        "dm_fallback_true" => state.dm_fallback_enabled = true,
+                        "dm_fallback_false" => state.dm_fallback_enabled = false,
+                        "pre_start_5" => state.pre_start_minutes = 5,
+                        "pre_start_15" => state.pre_start_minutes = 15,
+                        "pre_start_30" => state.pre_start_minutes = 30,
+                        "pre_end_5" => state.pre_end_minutes = 5,
+                        "pre_end_15" => state.pre_end_minutes = 15,
+                        "pre_end_30" => state.pre_end_minutes = 30,
+                        "overdue_6h" => state.overdue_repeat_hours = 6,
+                        "overdue_12h" => state.overdue_repeat_hours = 12,
+                        "overdue_24h" => state.overdue_repeat_hours = 24,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Acknowledge the selection
+        let response = CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .content("✅ Notification preferences updated. Click **Next** to continue.")
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    pub async fn handle_notification_next(
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        db: &SqlitePool,
+    ) -> Result<()> {
+        let user_id = interaction.user.id;
+
+        // Get current state
+        let (state, selected_roles) = {
+            let states = SETUP_STATES.lock().await;
+            if let Some(state) = states.get(&user_id) {
+                (state.clone(), state.selected_roles.clone())
+            } else {
+                // State not found, respond with error
+                let response = CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .content("❌ Session expired. Please start setup again.")
+                        .embeds(vec![])
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
         // Show final confirmation step
         Self::show_final_confirmation(ctx, interaction, db, &state, &selected_roles).await
     }
@@ -362,11 +547,21 @@ impl SetupCommand {
                 .join(", ")
         };
 
+        let notification_summary = format!(
+            "DM Fallback: {}\nPre-Start: {} min\nPre-End: {} min\nOverdue: Every {} hrs (max {})",
+            if state.dm_fallback_enabled { "Enabled" } else { "Disabled" },
+            state.pre_start_minutes,
+            state.pre_end_minutes,
+            state.overdue_repeat_hours,
+            state.overdue_max_count
+        );
+
         let embed = CreateEmbed::new()
-            .title("🔧 Setup - Step 2: Final Confirmation")
+            .title("🔧 Setup - Step 4: Final Confirmation")
             .description("Please review your configuration:")
             .field("Reservation Channel", state.channel_id.mention().to_string(), false)
             .field("Admin Roles", role_mentions, false)
+            .field("Notification Settings", notification_summary, false)
             .footer(serenity::all::CreateEmbedFooter::new("Click Complete to finish setup or Cancel to abort."))
             .color(Colour::BLURPLE);
 
@@ -427,15 +622,44 @@ impl SetupCommand {
             serde_json::to_string(&role_ids)?
         };
 
-        // Save configuration to database
-        sqlx::query(
-            "INSERT OR REPLACE INTO guilds (id, reservation_channel_id, admin_roles) VALUES (?, ?, ?)"
+        // Save configuration to database - update existing or insert new
+        let result = sqlx::query!(
+            "UPDATE guilds SET 
+             reservation_channel_id = ?, admin_roles = ?, dm_fallback_channel_enabled = ?,
+             pre_start_minutes = ?, pre_end_minutes = ?, overdue_repeat_hours = ?, 
+             overdue_max_count = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            channel_id_i64,
+            admin_roles_json,
+            state.dm_fallback_enabled,
+            state.pre_start_minutes,
+            state.pre_end_minutes,
+            state.overdue_repeat_hours,
+            state.overdue_max_count,
+            guild_id_i64
         )
-        .bind(guild_id_i64)
-        .bind(channel_id_i64)
-        .bind(&admin_roles_json)
         .execute(db)
         .await?;
+
+        // If no rows updated, insert new record
+        if result.rows_affected() == 0 {
+            sqlx::query!(
+                "INSERT INTO guilds 
+                 (id, reservation_channel_id, admin_roles, dm_fallback_channel_enabled,
+                  pre_start_minutes, pre_end_minutes, overdue_repeat_hours, overdue_max_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                guild_id_i64,
+                channel_id_i64,
+                admin_roles_json,
+                state.dm_fallback_enabled,
+                state.pre_start_minutes,
+                state.pre_end_minutes,
+                state.overdue_repeat_hours,
+                state.overdue_max_count
+            )
+            .execute(db)
+            .await?;
+        }
 
         // Show completion message
         let role_summary = if selected_roles.is_empty() {
@@ -449,17 +673,28 @@ impl SetupCommand {
             )
         };
 
+        let notification_summary = format!(
+            "DM Fallback: {}, Pre-Start: {}min, Pre-End: {}min, Overdue: Every {}hrs (max {})",
+            if state.dm_fallback_enabled { "✅" } else { "❌" },
+            state.pre_start_minutes,
+            state.pre_end_minutes,
+            state.overdue_repeat_hours,
+            state.overdue_max_count
+        );
+
         let embed = CreateEmbed::new()
             .title("✅ Setup Complete!")
             .description(format!(
                 "Successfully configured {} as the reservation channel.\n\n\
-                {}\n\n\
+                {}\n\
+                📱 **Notifications:** {}\n\n\
                 🚀 **Next Steps:**\n\
                 • Use the **Overall Management** button to add equipment\n\
                 • Configure lending/return locations\n\
                 • Set up equipment tags for organization",
                 state.channel_id.mention(),
-                role_summary
+                role_summary,
+                notification_summary
             ))
             .color(Colour::DARK_GREEN);
 

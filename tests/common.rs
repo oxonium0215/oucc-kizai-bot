@@ -75,6 +75,11 @@ impl GuildBuilder {
             admin_roles: self.admin_roles,
             created_at: now,
             updated_at: now,
+            dm_fallback_channel_enabled: Some(true),
+            overdue_repeat_hours: Some(12),
+            overdue_max_count: Some(3),
+            pre_start_minutes: Some(15),
+            pre_end_minutes: Some(15),
         })
     }
 }

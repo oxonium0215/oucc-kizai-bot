@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sent_reminders (reservation_id, kind, sent_at_utc, delivery_method)\n             VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "cca47081a5918f34c51c1dda60a863fe303ae9210c51baa89706b804e25d8f67"
+}

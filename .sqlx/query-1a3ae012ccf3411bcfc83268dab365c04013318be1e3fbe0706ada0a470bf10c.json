@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE guilds SET \n             reservation_channel_id = ?, admin_roles = ?, dm_fallback_channel_enabled = ?,\n             pre_start_minutes = ?, pre_end_minutes = ?, overdue_repeat_hours = ?, \n             overdue_max_count = ?, updated_at = CURRENT_TIMESTAMP\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "1a3ae012ccf3411bcfc83268dab365c04013318be1e3fbe0706ada0a470bf10c"
+}

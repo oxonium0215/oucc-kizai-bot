@@ -9,6 +9,12 @@ pub struct Guild {
     pub admin_roles: Option<String>, // JSON array of role IDs
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Notification preferences
+    pub dm_fallback_channel_enabled: Option<bool>,
+    pub overdue_repeat_hours: Option<i64>,
+    pub overdue_max_count: Option<i64>,
+    pub pre_start_minutes: Option<i64>,
+    pub pre_end_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -105,6 +111,16 @@ pub struct ManagedMessage {
     pub message_type: String, // EquipmentEmbed, OverallManagement, Guide
     pub equipment_id: Option<i64>,
     pub sort_order: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SentReminder {
+    pub id: i64,
+    pub reservation_id: i64,
+    pub kind: String,
+    pub sent_at_utc: DateTime<Utc>,
+    pub delivery_method: String, // DM, CHANNEL, FAILED
     pub created_at: DateTime<Utc>,
 }
 
@@ -251,6 +267,79 @@ impl From<MessageType> for String {
             MessageType::OverallManagement => "OverallManagement".to_string(),
             MessageType::Guide => "Guide".to_string(),
             MessageType::Header => "Header".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReminderKind {
+    PreStart,
+    Start,
+    PreEnd,
+    Overdue(u32), // Number for the overdue reminder sequence (1, 2, 3, etc.)
+}
+
+impl ReminderKind {
+    pub fn to_db_string(&self) -> String {
+        match self {
+            Self::PreStart => "PRE_START".to_string(),
+            Self::Start => "START".to_string(),
+            Self::PreEnd => "PRE_END".to_string(),
+            Self::Overdue(n) => format!("OVERDUE_{}", n),
+        }
+    }
+
+    pub fn from_db_string(s: &str) -> Option<Self> {
+        match s {
+            "PRE_START" => Some(Self::PreStart),
+            "START" => Some(Self::Start),
+            "PRE_END" => Some(Self::PreEnd),
+            s if s.starts_with("OVERDUE_") => {
+                let num_part = s.strip_prefix("OVERDUE_")?;
+                let num: u32 = num_part.parse().ok()?;
+                Some(Self::Overdue(num))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<String> for ReminderKind {
+    fn from(s: String) -> Self {
+        Self::from_db_string(&s).unwrap_or(Self::PreStart)
+    }
+}
+
+impl From<ReminderKind> for String {
+    fn from(kind: ReminderKind) -> Self {
+        kind.to_db_string()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMethod {
+    Dm,
+    Channel,
+    Failed,
+}
+
+impl From<String> for DeliveryMethod {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "DM" => Self::Dm,
+            "CHANNEL" => Self::Channel,
+            "FAILED" => Self::Failed,
+            _ => Self::Failed,
+        }
+    }
+}
+
+impl From<DeliveryMethod> for String {
+    fn from(method: DeliveryMethod) -> Self {
+        match method {
+            DeliveryMethod::Dm => "DM".to_string(),
+            DeliveryMethod::Channel => "CHANNEL".to_string(),
+            DeliveryMethod::Failed => "FAILED".to_string(),
         }
     }
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jobs (job_type, payload, scheduled_for)\n             VALUES ('reminder', ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c959277d0581bb895ef38b5e76b2f4fdedb617adbf76da5ea106643cac50ddba"
+}

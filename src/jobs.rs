@@ -1,19 +1,31 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::time::Duration as StdDuration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
+use serde_json::Value;
+use serenity::model::prelude::*;
 
-use crate::models::Job;
+use crate::models::{Job, ReminderKind, DeliveryMethod};
+use crate::traits::DiscordApi;
+use crate::time::utc_to_jst_string;
 
 pub struct JobWorker {
     db: SqlitePool,
+    discord_api: Option<Box<dyn DiscordApi>>,
 }
 
 impl JobWorker {
     pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+        Self { db, discord_api: None }
+    }
+
+    pub fn with_discord_api(db: SqlitePool, discord_api: Box<dyn DiscordApi>) -> Self {
+        Self { 
+            db, 
+            discord_api: Some(discord_api),
+        }
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -24,7 +36,7 @@ impl JobWorker {
                 error!("Error processing jobs: {}", e);
             }
 
-            sleep(Duration::from_secs(30)).await;
+            sleep(StdDuration::from_secs(60)).await; // Changed to 60 seconds as per requirement
         }
     }
 
@@ -81,9 +93,193 @@ impl JobWorker {
         Ok(())
     }
 
-    async fn process_reminder(&self, _job: &Job) -> Result<()> {
-        // TODO: Implement reminder processing
+    async fn process_reminder(&self, job: &Job) -> Result<()> {
+        let payload: Value = serde_json::from_str(&job.payload)?;
+        let reservation_id = payload["reservation_id"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("Missing reservation_id in job payload"))?;
+        let reminder_type = payload["type"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing type in job payload"))?;
+
+        // Parse reminder kind
+        let reminder_kind = match reminder_type {
+            "pre_start" => ReminderKind::PreStart,
+            "start" => ReminderKind::Start,
+            "pre_end" => ReminderKind::PreEnd,
+            s if s.starts_with("return_delay") => {
+                // Extract overdue count from type like "return_delay_1", "return_delay_2"
+                let overdue_num = if s == "return_delay" {
+                    1
+                } else {
+                    s.strip_prefix("return_delay_")
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .unwrap_or(1)
+                };
+                ReminderKind::Overdue(overdue_num)
+            }
+            _ => return Err(anyhow::anyhow!("Unknown reminder type: {}", reminder_type)),
+        };
+
+        // Check if reminder already sent (idempotency)
+        let reminder_kind_str = reminder_kind.to_db_string();
+        let existing_reminder = sqlx::query!(
+            "SELECT id FROM sent_reminders WHERE reservation_id = ? AND kind = ?",
+            reservation_id,
+            reminder_kind_str
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if existing_reminder.is_some() {
+            info!("Reminder already sent for reservation {} kind {}", reservation_id, reminder_kind.to_db_string());
+            return Ok(());
+        }
+
+        // Get reservation details
+        let reservation_row = sqlx::query!(
+            "SELECT * FROM reservations WHERE id = ? AND status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation_row = match reservation_row {
+            Some(r) => r,
+            None => {
+                info!("Reservation {} not found or not confirmed, skipping reminder", reservation_id);
+                return Ok(());
+            }
+        };
+
+        // Skip if already returned
+        if reservation_row.returned_at.is_some() {
+            info!("Reservation {} already returned, skipping reminder", reservation_id);
+            return Ok(());
+        }
+
+        // Get equipment details
+        let equipment_row = sqlx::query!(
+            "SELECT * FROM equipment WHERE id = ?",
+            reservation_row.equipment_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        // Get guild configuration for fallback behavior
+        let guild_row = sqlx::query!(
+            "SELECT * FROM guilds WHERE id = ?",
+            equipment_row.guild_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        // Format reminder message - get individual fields safely
+        let equipment_name: String = equipment_row.name;
+        let start_time_naive: chrono::NaiveDateTime = reservation_row.start_time;
+        let end_time_naive: chrono::NaiveDateTime = reservation_row.end_time;
+        
+        // Convert to UTC DateTime
+        let start_time_utc = DateTime::<Utc>::from_naive_utc_and_offset(start_time_naive, Utc);
+        let end_time_utc = DateTime::<Utc>::from_naive_utc_and_offset(end_time_naive, Utc);
+        
+        let message = match &reminder_kind {
+            ReminderKind::PreStart => format!(
+                "📅 リマインダー: 「{}」の貸出開始まで15分です。\n開始時刻: {}",
+                equipment_name,
+                utc_to_jst_string(start_time_utc)
+            ),
+            ReminderKind::Start => format!(
+                "📅 貸出開始: 「{}」の貸出が開始されました。\n貸出時刻: {}",
+                equipment_name,
+                utc_to_jst_string(start_time_utc)
+            ),
+            ReminderKind::PreEnd => format!(
+                "📅 リマインダー: 「{}」の貸出期限まで15分です。\n返却時刻: {}",
+                equipment_name,
+                utc_to_jst_string(end_time_utc)
+            ),
+            ReminderKind::Overdue(count) => format!(
+                "⚠️ 返却遅延 #{}: 「{}」の返却期限が過ぎています。\n期限: {}",
+                count,
+                equipment_name,
+                utc_to_jst_string(end_time_utc)
+            ),
+        };
+
+        // Try sending reminder
+        let delivery_method = if let Some(discord_api) = &self.discord_api {
+            self.send_reminder_with_fallback(
+                discord_api.as_ref(),
+                reservation_row.user_id,
+                &message,
+                guild_row.reservation_channel_id,
+                guild_row.dm_fallback_channel_enabled.unwrap_or(true),
+            ).await?
+        } else {
+            DeliveryMethod::Failed
+        };
+
+        // Record that we sent this reminder
+        let reminder_kind_str = reminder_kind.to_db_string();
+        let now = Utc::now();
+        let delivery_method_str = String::from(delivery_method);
+        
+        sqlx::query!(
+            "INSERT INTO sent_reminders (reservation_id, kind, sent_at_utc, delivery_method)
+             VALUES (?, ?, ?, ?)",
+            reservation_id,
+            reminder_kind_str,
+            now,
+            delivery_method_str
+        )
+        .execute(&self.db)
+        .await?;
+
+        info!("Sent {} reminder for reservation {} via {:?}", 
+              reminder_kind.to_db_string(), reservation_id, delivery_method);
+
         Ok(())
+    }
+
+    async fn send_reminder_with_fallback(
+        &self,
+        discord_api: &dyn DiscordApi,
+        user_id: i64,
+        message: &str,
+        reservation_channel_id: Option<i64>,
+        dm_fallback_enabled: bool,
+    ) -> Result<DeliveryMethod> {
+        let user_id = UserId::new(user_id as u64);
+
+        // Try sending DM first
+        match discord_api.send_dm(user_id, message).await {
+            Ok(Some(_)) => return Ok(DeliveryMethod::Dm),
+            Ok(None) => {
+                // DM failed (user has DMs disabled)
+                info!("DM failed for user {}, attempting fallback", user_id);
+            }
+            Err(e) => {
+                warn!("Error sending DM to user {}: {}", user_id, e);
+            }
+        }
+
+        // Fallback to channel mention if enabled and channel is configured
+        if dm_fallback_enabled {
+            if let Some(channel_id) = reservation_channel_id {
+                let channel_message = format!("<@{}> {}", user_id, message);
+                let channel_id = ChannelId::new(channel_id as u64);
+                
+                match discord_api.send_channel_message(channel_id, &channel_message).await {
+                    Ok(_) => return Ok(DeliveryMethod::Channel),
+                    Err(e) => {
+                        warn!("Error sending channel fallback message: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(DeliveryMethod::Failed)
     }
 
     async fn process_transfer_timeout(&self, _job: &Job) -> Result<()> {
@@ -109,7 +305,7 @@ impl JobWorker {
             .await?;
         } else {
             // Reschedule for retry
-            let retry_delay = Duration::from_secs(300); // 5 minutes
+            let retry_delay = StdDuration::from_secs(300); // 5 minutes
             let new_scheduled_for = Utc::now() + chrono::Duration::from_std(retry_delay)?;
 
             sqlx::query(
@@ -122,6 +318,153 @@ impl JobWorker {
             .await?;
         }
 
+        Ok(())
+    }
+}
+
+/// Utility functions for scheduling reminder jobs
+impl JobWorker {
+    /// Schedule all reminder jobs for a reservation
+    pub async fn schedule_reservation_reminders(
+        db: &SqlitePool,
+        reservation_id: i64,
+        reservation_start: DateTime<Utc>,
+        reservation_end: DateTime<Utc>,
+        guild_id: i64,
+    ) -> Result<()> {
+        // Get guild notification preferences
+        let guild_row = sqlx::query!(
+            "SELECT * FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_one(db)
+        .await?;
+
+        let pre_start_minutes = guild_row.pre_start_minutes.unwrap_or(15);
+        let pre_end_minutes = guild_row.pre_end_minutes.unwrap_or(15);
+
+        // Schedule pre-start reminder
+        if pre_start_minutes > 0 {
+            let pre_start_time = reservation_start - Duration::minutes(pre_start_minutes);
+            if pre_start_time > Utc::now() {
+                Self::schedule_reminder_job(
+                    db,
+                    reservation_id,
+                    "pre_start",
+                    pre_start_time,
+                ).await?;
+            }
+        }
+
+        // Schedule start reminder
+        if reservation_start > Utc::now() {
+            Self::schedule_reminder_job(
+                db,
+                reservation_id,
+                "start",
+                reservation_start,
+            ).await?;
+        }
+
+        // Schedule pre-end reminder
+        if pre_end_minutes > 0 {
+            let pre_end_time = reservation_end - Duration::minutes(pre_end_minutes);
+            if pre_end_time > Utc::now() {
+                Self::schedule_reminder_job(
+                    db,
+                    reservation_id,
+                    "pre_end",
+                    pre_end_time,
+                ).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Schedule overdue reminders for a reservation
+    pub async fn schedule_overdue_reminders(
+        db: &SqlitePool,
+        reservation_id: i64,
+        reservation_end: DateTime<Utc>,
+        guild_id: i64,
+    ) -> Result<()> {
+        let guild_row = sqlx::query!(
+            "SELECT * FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_one(db)
+        .await?;
+
+        let repeat_hours = guild_row.overdue_repeat_hours.unwrap_or(12);
+        let max_count = guild_row.overdue_max_count.unwrap_or(3);
+
+        for i in 1..=max_count {
+            let overdue_time = reservation_end + Duration::hours(repeat_hours * i);
+            if overdue_time > Utc::now() {
+                let job_type = if i == 1 {
+                    "return_delay".to_string()
+                } else {
+                    format!("return_delay_{}", i)
+                };
+
+                Self::schedule_reminder_job(
+                    db,
+                    reservation_id,
+                    &job_type,
+                    overdue_time,
+                ).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn schedule_reminder_job(
+        db: &SqlitePool,
+        reservation_id: i64,
+        reminder_type: &str,
+        scheduled_for: DateTime<Utc>,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "reservation_id": reservation_id,
+            "type": reminder_type
+        });
+        let payload_str = payload.to_string();
+
+        sqlx::query!(
+            "INSERT INTO jobs (job_type, payload, scheduled_for)
+             VALUES ('reminder', ?, ?)",
+            payload_str,
+            scheduled_for
+        )
+        .execute(db)
+        .await?;
+
+        info!("Scheduled {} reminder for reservation {} at {}", 
+              reminder_type, reservation_id, scheduled_for);
+
+        Ok(())
+    }
+
+    /// Cancel all future reminders for a reservation (when returned)
+    pub async fn cancel_reservation_reminders(
+        db: &SqlitePool,
+        reservation_id: i64,
+    ) -> Result<()> {
+        // Cancel pending reminder jobs
+        sqlx::query!(
+            "UPDATE jobs 
+             SET status = 'Cancelled', updated_at = CURRENT_TIMESTAMP
+             WHERE job_type = 'reminder' 
+             AND status = 'Pending'
+             AND JSON_EXTRACT(payload, '$.reservation_id') = ?",
+            reservation_id
+        )
+        .execute(db)
+        .await?;
+
+        info!("Cancelled future reminders for reservation {}", reservation_id);
         Ok(())
     }
 }

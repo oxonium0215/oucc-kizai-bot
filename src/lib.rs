@@ -7,3 +7,4 @@ pub mod database;
 pub mod equipment;
 pub mod handlers;
 pub mod commands;
+pub mod jobs;
