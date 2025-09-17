@@ -301,6 +301,8 @@ impl ReservationBuilder {
             status: self.status,
             created_at: now,
             updated_at: now,
+            returned_at: None,
+            return_location: None,
         })
     }
 }

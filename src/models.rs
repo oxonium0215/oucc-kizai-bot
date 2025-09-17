@@ -54,6 +54,8 @@ pub struct Reservation {
     pub status: String, // Confirmed, Cancelled
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub returned_at: Option<DateTime<Utc>>,
+    pub return_location: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
