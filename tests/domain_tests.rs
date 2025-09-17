@@ -424,3 +424,119 @@ fn test_equipment_sorting_no_tags() {
     assert_eq!(equipment_with_tags[0].0.name, "Alpha Camera");
     assert_eq!(equipment_with_tags[1].0.name, "Zebra Camera");
 }
+
+#[tokio::test]
+async fn test_maintenance_window_conflict_detection() -> Result<()> {
+    let ctx = common::setup_test_db().await?;
+
+    // Create test equipment
+    let equipment_id = sqlx::query!(
+        "INSERT INTO equipment (guild_id, name, status) VALUES (1, 'Test Equipment', 'Available')"
+    )
+    .execute(&ctx.db)
+    .await?
+    .last_insert_rowid();
+
+    let base_time = Utc::now();
+    let hour = Duration::hours(1);
+
+    // Create a maintenance window
+    let maintenance_start = base_time + hour;
+    let maintenance_end = base_time + hour * 3;
+    
+    sqlx::query!(
+        "INSERT INTO maintenance_windows (equipment_id, start_utc, end_utc, reason, created_by_user_id) 
+         VALUES (?, ?, ?, 'Test maintenance', 123)",
+        equipment_id,
+        maintenance_start.naive_utc(),
+        maintenance_end.naive_utc()
+    )
+    .execute(&ctx.db)
+    .await?;
+
+    // Test that we can detect overlap with maintenance windows
+    let maintenance_helper = oucc_kizai_bot::maintenance::MaintenanceHelper::new(ctx.db.clone());
+
+    // Test 1: Overlapping reservation should conflict
+    let conflict_start = base_time + Duration::minutes(30);
+    let conflict_end = base_time + hour * 2;
+    
+    let conflict = maintenance_helper
+        .check_maintenance_conflict(equipment_id, conflict_start, conflict_end)
+        .await?;
+    
+    assert!(conflict.is_some(), "Should detect conflict with maintenance window");
+
+    // Test 2: Non-overlapping reservation should not conflict
+    let no_conflict_start = base_time + hour * 4;
+    let no_conflict_end = base_time + hour * 5;
+    
+    let no_conflict = maintenance_helper
+        .check_maintenance_conflict(equipment_id, no_conflict_start, no_conflict_end)
+        .await?;
+    
+    assert!(no_conflict.is_none(), "Should not detect conflict outside maintenance window");
+
+    // Test 3: Exactly adjacent times should not conflict
+    let adjacent_start = base_time + hour * 3; // Starts when maintenance ends
+    let adjacent_end = base_time + hour * 4;
+    
+    let adjacent_conflict = maintenance_helper
+        .check_maintenance_conflict(equipment_id, adjacent_start, adjacent_end)
+        .await?;
+    
+    assert!(adjacent_conflict.is_none(), "Should not conflict with adjacent times");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_maintenance_window_creation_with_overlap_check() -> Result<()> {
+    let ctx = common::setup_test_db().await?;
+
+    // Create test equipment
+    let equipment_id = sqlx::query!(
+        "INSERT INTO equipment (guild_id, name, status) VALUES (1, 'Test Equipment', 'Available')"
+    )
+    .execute(&ctx.db)
+    .await?
+    .last_insert_rowid();
+
+    let base_time = Utc::now();
+    let hour = Duration::hours(1);
+
+    let maintenance_helper = oucc_kizai_bot::maintenance::MaintenanceHelper::new(ctx.db.clone());
+
+    // Test 1: Create first maintenance window
+    let start1 = base_time + hour;
+    let end1 = base_time + hour * 3;
+    
+    let result1 = maintenance_helper
+        .create_maintenance_window(equipment_id, start1, end1, Some("First maintenance".to_string()), 123)
+        .await;
+    
+    assert!(result1.is_ok(), "First maintenance window should be created successfully");
+
+    // Test 2: Try to create overlapping maintenance window (should fail)
+    let start2 = base_time + hour * 2; // Overlaps with first window
+    let end2 = base_time + hour * 4;
+    
+    let result2 = maintenance_helper
+        .create_maintenance_window(equipment_id, start2, end2, Some("Second maintenance".to_string()), 123)
+        .await;
+    
+    assert!(result2.is_err(), "Overlapping maintenance window should be rejected");
+    assert!(result2.unwrap_err().contains("overlap"), "Error should mention overlap");
+
+    // Test 3: Create non-overlapping maintenance window (should succeed)
+    let start3 = base_time + hour * 5;
+    let end3 = base_time + hour * 7;
+    
+    let result3 = maintenance_helper
+        .create_maintenance_window(equipment_id, start3, end3, Some("Third maintenance".to_string()), 123)
+        .await;
+    
+    assert!(result3.is_ok(), "Non-overlapping maintenance window should be created successfully");
+
+    Ok(())
+}

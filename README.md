@@ -364,6 +364,106 @@ Administrators can:
 - Cancel any user's reservation using admin-only cancel buttons
 - Access Overall Management panel for equipment/location/tag management
 - View detailed equipment logs with full reservation history
+- Create and manage maintenance windows for equipment
+
+## Maintenance & Blackouts
+
+The bot supports scheduled maintenance windows that make equipment temporarily unavailable for reservations. This is useful for cleaning, repairs, inspections, or other equipment downtime.
+
+### Creating Maintenance Windows
+
+**Access**: Admin-only feature accessible through equipment embeds
+
+1. **New Maintenance**: Click "🔧 Maintenance" button on any equipment embed
+2. **Fill Details**: Specify start time, end time, and optional reason in JST format
+3. **Automatic Conflict Detection**: System prevents overlaps with existing reservations and maintenance
+
+#### Time Format
+- **Format**: `YYYY-MM-DD HH:MM` (24-hour format in JST)
+- **Examples**: 
+  - `2024-01-15 09:00` (9:00 AM on January 15, 2024)
+  - `2024-12-25 13:30` (1:30 PM on December 25, 2024)
+
+#### Validation Rules
+- Start time must be in the future
+- End time must be after start time
+- Cannot overlap with existing reservations
+- Cannot overlap with other maintenance windows on the same equipment
+
+### Managing Existing Maintenance
+
+When equipment has scheduled maintenance, the embed shows additional buttons:
+
+- **🔧 Edit Maintenance**: Modify times or reason (with conflict checking)
+- **❌ Cancel Maintenance**: Remove the maintenance window
+
+### Conflict Prevention
+
+The system enforces strict conflict prevention:
+
+#### Reservation Conflicts
+- **Creation**: New reservations are blocked during maintenance periods
+- **Modification**: Existing reservations cannot be changed to overlap maintenance
+- **Clear Messages**: Users see specific maintenance details when conflicts occur
+
+Example conflict message:
+```
+❌ Reservation conflicts with scheduled maintenance (Equipment cleaning) 
+from 2024-01-15 09:00 to 2024-01-15 17:00. Please choose a different time.
+```
+
+#### Maintenance Conflicts
+- **Overlap Prevention**: Multiple maintenance windows cannot overlap on the same equipment
+- **Edit Protection**: Maintenance edits are validated against existing windows
+- **Visual Feedback**: Clear error messages when overlaps are attempted
+
+### Display Integration
+
+#### Equipment Embeds
+Maintenance status is prominently displayed in equipment embeds:
+
+**Current Maintenance**:
+```
+🔧 Current Maintenance
+Equipment cleaning
+Until: 2024-01-15 17:00
+```
+
+**Upcoming Maintenance**:
+```
+🔧 Scheduled Maintenance
+Equipment cleaning
+From: 2024-01-15 09:00 to 2024-01-15 17:00
+```
+
+#### Automatic Updates
+- Equipment embeds update automatically when maintenance is created/edited/canceled
+- Maintenance buttons change based on current status
+- Real-time conflict detection during reservation flows
+
+### Notifications (Planned)
+
+When maintenance overlaps existing reservations, affected users receive notifications with:
+- Equipment name and maintenance details
+- Affected time periods in JST
+- Quick action buttons to modify or cancel their reservations
+
+### Troubleshooting
+
+#### "Cannot create overlapping maintenance"
+- **Check Schedule**: Verify no existing maintenance windows overlap
+- **Time Boundaries**: Ensure start/end times don't conflict with other windows
+- **Reload Interface**: Refresh equipment embed to see current maintenance status
+
+#### "Maintenance conflicts with reservation"
+- **Review Reservations**: Check existing bookings during the proposed time
+- **Coordinate with Users**: Contact affected users to reschedule if needed
+- **Force Override**: Cancel conflicting reservations first (if appropriate)
+
+#### "Users not notified about maintenance"
+- **DM Settings**: Users may have disabled direct messages
+- **Channel Notifications**: Check if fallback channel notifications are enabled
+- **Manual Communication**: Consider posting in channel for important maintenance
 
 ### Overall Management
 

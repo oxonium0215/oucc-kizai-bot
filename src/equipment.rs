@@ -222,6 +222,23 @@ impl EquipmentRenderer {
             embed = embed.field("Availability", "Available for reservation", false);
         }
 
+        // Add maintenance information
+        let current_maintenance = self.get_current_or_upcoming_maintenance(equipment.id).await?;
+        if let Some(maintenance) = current_maintenance {
+            let start_jst = time::utc_to_jst_string(maintenance.start_utc);
+            let end_jst = time::utc_to_jst_string(maintenance.end_utc);
+            let reason = maintenance.reason.unwrap_or_else(|| "Equipment maintenance".to_string());
+            
+            let now = Utc::now();
+            if maintenance.start_utc <= now && now < maintenance.end_utc {
+                // Currently in maintenance
+                embed = embed.field("🔧 Current Maintenance", format!("**{}**\nUntil: {}", reason, end_jst), false);
+            } else {
+                // Upcoming maintenance
+                embed = embed.field("🔧 Scheduled Maintenance", format!("**{}**\nFrom: {} to {}", reason, start_jst, end_jst), false);
+            }
+        }
+
         Ok(embed)
     }
 
