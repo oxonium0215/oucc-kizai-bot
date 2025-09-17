@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO maintenance_windows (equipment_id, start_utc, end_utc, reason, created_by_user_id)\n             VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "8b4bf3b0aa59a0b756a5be60d819e49743cae2e1e1ba0c8c1cc272f511aca50b"
+}

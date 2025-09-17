@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transfer_requests \n             SET status = 'Canceled', canceled_at_utc = ?, canceled_by_user_id = ?, updated_at = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "0b6e327d209147d1ad844ca08278f494ef640c1fb9e4c5f7b673a9075cdc1fe0"
+}

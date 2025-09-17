@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.start_time, r.end_time, e.name as equipment_name\n             FROM reservations r\n             JOIN equipment e ON r.equipment_id = e.id\n             WHERE r.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "start_time",
+        "ordinal": 0,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_time",
+        "ordinal": 1,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "equipment_name",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8d47c7fa1b8fe0d4181254dbdd8779920846c977286c34bcef82251450d5b673"
+}

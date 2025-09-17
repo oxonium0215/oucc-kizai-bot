@@ -148,6 +148,49 @@ pub struct MaintenanceSettings {
     pub admin_reminder_minutes: Option<i64>,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct QuotaSettings {
+    pub guild_id: i64,
+    pub max_active_count: Option<i64>,
+    pub max_overlap_count: Option<i64>,
+    pub max_hours_7d: Option<i64>,
+    pub max_hours_30d: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct QuotaRoleOverride {
+    pub guild_id: i64,
+    pub role_id: i64,
+    pub max_active_count: Option<i64>,
+    pub max_overlap_count: Option<i64>,
+    pub max_hours_7d: Option<i64>,
+    pub max_hours_30d: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct QuotaOverrideAudit {
+    pub id: i64,
+    pub guild_id: i64,
+    pub reservation_id: Option<i64>,
+    pub user_id: i64,
+    pub acted_by_user_id: i64,
+    pub reason: Option<String>,
+    pub created_at_utc: DateTime<Utc>,
+}
+
+/// Combined quota limits after applying role overrides
+#[derive(Debug, Clone, Default)]
+pub struct EffectiveQuotaLimits {
+    pub max_active_count: Option<i64>,
+    pub max_overlap_count: Option<i64>,
+    pub max_hours_7d: Option<i64>,
+    pub max_hours_30d: Option<i64>,
+}
+
 // Enums for better type safety
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EquipmentStatus {
