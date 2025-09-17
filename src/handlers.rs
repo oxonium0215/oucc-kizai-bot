@@ -4,10 +4,47 @@ use serenity::model::prelude::*;
 use serenity::prelude::*;
 use sqlx::SqlitePool;
 use tracing::{error, info};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use chrono::{DateTime, Utc};
 
 use crate::commands::SetupCommand;
 use crate::utils;
 use crate::equipment::EquipmentRenderer;
+
+// In-memory storage for reservation wizard state
+#[derive(Debug, Clone)]
+struct ReservationWizardState {
+    equipment_id: i64,
+    user_id: UserId,
+    guild_id: GuildId,
+    step: WizardStep,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    location: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum WizardStep {
+    StartTime,
+    EndTime,
+    Location,
+    Confirmation,
+}
+
+lazy_static::lazy_static! {
+    static ref RESERVATION_WIZARD_STATES: Arc<Mutex<HashMap<(UserId, String), ReservationWizardState>>> = Arc::new(Mutex::new(HashMap::new()));
+}
+
+// Helper struct for simulating component interactions from modals
+#[derive(Clone)]
+struct ComponentInteractionRef {
+    user: User,
+    token: String,
+    guild_id: Option<GuildId>,
+    channel_id: ChannelId,
+}
 
 pub struct Handler {
     db: SqlitePool,
@@ -222,6 +259,26 @@ impl Handler {
                     self.handle_reservation_cancel(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("res_admin_cancel:") {
                     self.handle_reservation_admin_cancel(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_start_input:") {
+                    self.handle_reservation_wizard_start_input(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_end_input:") {
+                    self.handle_reservation_wizard_end_input(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_location_input:") {
+                    self.handle_reservation_wizard_location_input(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_location_default:") {
+                    self.handle_reservation_wizard_location_default(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_location_skip:") {
+                    self.handle_reservation_wizard_location_skip(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_back_start:") {
+                    self.handle_reservation_wizard_back_start(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_back_end:") {
+                    self.handle_reservation_wizard_back_end(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_back_location:") {
+                    self.handle_reservation_wizard_back_location(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_confirm:") {
+                    self.handle_reservation_wizard_confirm(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_cancel:") {
+                    self.handle_reservation_wizard_cancel(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -467,6 +524,12 @@ impl Handler {
                     self.handle_reservation_modal(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("edit_reservation_modal:") {
                     self.handle_edit_reservation_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_start_time_modal:") {
+                    self.handle_reservation_wizard_start_time_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_end_time_modal:") {
+                    self.handle_reservation_wizard_end_time_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_location_modal:") {
+                    self.handle_reservation_wizard_location_modal(ctx, interaction).await?
                 } else {
                     error!("Unknown modal interaction: {}", interaction.data.custom_id);
                 }
@@ -768,33 +831,26 @@ impl Handler {
             return Ok(());
         }
 
-        // Create reservation modal
-        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
-        
-        let modal = CreateModal::new(
-            format!("reserve_modal:{}", equipment_id), 
-            format!("Reserve {}", equipment.name)
-        )
-        .components(vec![
-            serenity::all::CreateActionRow::InputText(
-                CreateInputText::new(InputTextStyle::Short, "start_time", "Start Time")
-                    .placeholder("YYYY-MM-DD HH:MM (JST)")
-                    .required(true),
-            ),
-            serenity::all::CreateActionRow::InputText(
-                CreateInputText::new(InputTextStyle::Short, "end_time", "End Time")
-                    .placeholder("YYYY-MM-DD HH:MM (JST)")
-                    .required(true),
-            ),
-            serenity::all::CreateActionRow::InputText(
-                CreateInputText::new(InputTextStyle::Short, "location", "Return Location (Optional)")
-                    .placeholder(&equipment.default_return_location.unwrap_or_default())
-                    .required(false),
-            ),
-        ]);
+        // Initialize reservation wizard state
+        let wizard_state = ReservationWizardState {
+            equipment_id,
+            user_id: interaction.user.id,
+            guild_id: interaction.guild_id.unwrap(),
+            step: WizardStep::StartTime,
+            start_time: None,
+            end_time: None,
+            location: None,
+        };
 
-        let response = serenity::all::CreateInteractionResponse::Modal(modal);
-        interaction.create_response(&ctx.http, response).await?;
+        // Store wizard state using user_id and interaction token as key
+        let state_key = (interaction.user.id, interaction.token.clone());
+        {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            states.insert(state_key, wizard_state);
+        }
+
+        // Start wizard with start time step
+        self.show_start_time_step(ctx, interaction, &equipment.name).await?;
         Ok(())
     }
 
@@ -846,6 +902,238 @@ impl Handler {
                 .content("↩️ Equipment return functionality coming soon!")
                 .ephemeral(true),
         );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    // Reservation wizard step methods
+
+    async fn show_start_time_step(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        equipment_name: &str,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let embed = CreateEmbed::new()
+            .title("📅 Reserve Equipment - Step 1/3")
+            .description(format!("**Equipment:** {}\n\n**Step 1:** Please enter the start date and time for your reservation.\n\n⏰ **Format:** YYYY-MM-DD HH:MM (JST)\n📝 **Example:** 2024-01-15 14:30\n\n⚠️ **Note:** Start time must be in the future.", equipment_name))
+            .color(Colour::BLUE)
+            .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("reserve_start_input:{}", interaction.token))
+                .label("📅 Enter Start Time")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons])
+                .ephemeral(true),
+        );
+
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn show_end_time_step(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        
+        let embed = CreateEmbed::new()
+            .title("📅 Reserve Equipment - Step 2/3")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n\n**Step 2:** Please enter the end date and time for your reservation.\n\n⏰ **Format:** YYYY-MM-DD HH:MM (JST)\n📝 **Example:** 2024-01-15 18:30\n\n⚠️ **Note:** End time must be after start time and within 60 days.", equipment_name, start_jst))
+            .color(Colour::BLUE)
+            .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("reserve_end_input:{}", interaction.token))
+                .label("📅 Enter End Time")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("reserve_back_start:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons]),
+        );
+
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn show_location_step(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        default_location: Option<String>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        let end_jst = crate::time::utc_to_jst_string(end_time);
+        
+        let embed = CreateEmbed::new()
+            .title("📍 Reserve Equipment - Step 3/3")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n**End Time:** {}\n\n**Step 3:** Please specify the return location (optional).\n\n📍 You can use the default location or enter a custom one.", equipment_name, start_jst, end_jst))
+            .color(Colour::BLUE);
+
+        let mut buttons = vec![
+            CreateButton::new(format!("reserve_location_input:{}", interaction.token))
+                .label("📍 Enter Location")
+                .style(ButtonStyle::Primary),
+        ];
+
+        if let Some(ref default_loc) = default_location {
+            if !default_loc.is_empty() {
+                buttons.push(
+                    CreateButton::new(format!("reserve_location_default:{}", interaction.token))
+                        .label(format!("📍 Use Default ({})", default_loc))
+                        .style(ButtonStyle::Secondary)
+                );
+            }
+        }
+
+        buttons.extend_from_slice(&[
+            CreateButton::new(format!("reserve_location_skip:{}", interaction.token))
+                .label("⏭️ Skip Location")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_back_end:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![CreateActionRow::Buttons(buttons)]),
+        );
+
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn show_confirmation_step(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        location: Option<String>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        let end_jst = crate::time::utc_to_jst_string(end_time);
+        let location_text = location.as_deref().unwrap_or("Not specified");
+        
+        // Check for conflicts in real-time before showing confirmation
+        let state_key = (interaction.user.id, interaction.token.clone());
+        let equipment_id = {
+            let states = RESERVATION_WIZARD_STATES.lock().await;
+            states.get(&state_key).map(|s| s.equipment_id).unwrap_or(0)
+        };
+
+        if equipment_id == 0 {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Session expired. Please start the reservation process again.")
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Check for conflicts
+        let conflicts = sqlx::query!(
+            "SELECT id, user_id, start_time, end_time FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' 
+             AND start_time < ? AND end_time > ?",
+            equipment_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        if !conflicts.is_empty() {
+            let conflict = &conflicts[0];
+            let conflict_start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
+            let conflict_end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
+            
+            let embed = CreateEmbed::new()
+                .title("⚠️ Reservation Conflict Detected")
+                .description(format!("**Equipment:** {}\n\n❌ **Conflict:** Your requested time overlaps with an existing reservation by <@{}> from {} to {}.\n\nPlease go back and choose different times.", equipment_name, conflict.user_id, conflict_start_jst, conflict_end_jst))
+                .color(Colour::RED);
+
+            let buttons = CreateActionRow::Buttons(vec![
+                CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                    .label("⬅️ Back to Times")
+                    .style(ButtonStyle::Secondary),
+                CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                    .label("❌ Cancel")
+                    .style(ButtonStyle::Danger),
+            ]);
+
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![buttons]),
+            );
+
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+        
+        let embed = CreateEmbed::new()
+            .title("✅ Confirm Reservation")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n**End Time:** {}\n**Return Location:** {}\n\n🔍 **Conflict Check:** ✅ No conflicts detected\n\nPlease confirm your reservation details.", equipment_name, start_jst, end_jst, location_text))
+            .color(Colour::DARK_GREEN);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("reserve_confirm:{}", interaction.token))
+                .label("✅ Confirm Reservation")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons]),
+        );
+
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
@@ -1569,6 +1857,853 @@ impl Handler {
 
         tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
+        Ok(())
+    }
+
+    // Reservation wizard button handlers
+
+    async fn handle_reservation_wizard_start_input(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("reserve_start_time_modal:{}", interaction.token), 
+            "Enter Start Time"
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "start_time", "Start Date & Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .required(true),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_end_input(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("reserve_end_time_modal:{}", interaction.token), 
+            "Enter End Time"
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "end_time", "End Date & Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .required(true),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_location_input(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("reserve_location_modal:{}", interaction.token), 
+            "Enter Return Location"
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "location", "Return Location")
+                    .placeholder("Where will you return this equipment?")
+                    .required(true),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_location_default(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Get equipment default location and update state
+        let (equipment_name, start_time, end_time, default_location) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                let equipment = sqlx::query!(
+                    "SELECT name, default_return_location FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => {
+                        state.location = eq.default_return_location.clone();
+                        state.step = WizardStep::Confirmation;
+                        (eq.name, state.start_time, state.end_time, eq.default_return_location)
+                    }
+                    None => {
+                        return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+                    }
+                }
+            } else {
+                return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+            }
+        };
+
+        if let (Some(start), Some(end)) = (start_time, end_time) {
+            self.show_confirmation_step(ctx, interaction, &equipment_name, start, end, default_location).await?;
+        } else {
+            self.handle_reservation_wizard_cancel(ctx, interaction).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_location_skip(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Update state to skip location
+        let (equipment_name, start_time, end_time) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.location = None;
+                state.step = WizardStep::Confirmation;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => (eq.name, state.start_time, state.end_time),
+                    None => {
+                        return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+                    }
+                }
+            } else {
+                return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+            }
+        };
+
+        if let (Some(start), Some(end)) = (start_time, end_time) {
+            self.show_confirmation_step(ctx, interaction, &equipment_name, start, end, None).await?;
+        } else {
+            self.handle_reservation_wizard_cancel(ctx, interaction).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_back_start(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Reset to start time step
+        let equipment_name = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.step = WizardStep::StartTime;
+                state.start_time = None;
+                state.end_time = None;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => eq.name,
+                    None => {
+                        return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+                    }
+                }
+            } else {
+                return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+            }
+        };
+
+        self.show_start_time_step(ctx, interaction, &equipment_name).await?;
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_back_end(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Reset to end time step
+        let (equipment_name, start_time) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.step = WizardStep::EndTime;
+                state.end_time = None;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => (eq.name, state.start_time),
+                    None => {
+                        return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+                    }
+                }
+            } else {
+                return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+            }
+        };
+
+        if let Some(start) = start_time {
+            self.show_end_time_step(ctx, interaction, &equipment_name, start).await?;
+        } else {
+            self.show_start_time_step(ctx, interaction, &equipment_name).await?;
+        }
+        
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_back_location(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Reset to location step
+        let (equipment_name, start_time, end_time, default_location) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.step = WizardStep::Location;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name, default_return_location FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => (eq.name, state.start_time, state.end_time, eq.default_return_location),
+                    None => {
+                        return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+                    }
+                }
+            } else {
+                return self.handle_reservation_wizard_cancel(ctx, interaction).await;
+            }
+        };
+
+        if let (Some(start), Some(end)) = (start_time, end_time) {
+            self.show_location_step(ctx, interaction, &equipment_name, start, end, default_location).await?;
+        } else {
+            self.show_start_time_step(ctx, interaction, &equipment_name).await?;
+        }
+        
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_confirm(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Get final state and create reservation
+        let (equipment_id, user_id, start_time, end_time, location) = {
+            let states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get(&state_key) {
+                (
+                    state.equipment_id,
+                    state.user_id.get() as i64,
+                    state.start_time,
+                    state.end_time,
+                    state.location.clone(),
+                )
+            } else {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Session expired. Please start the reservation process again.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        if let (Some(start), Some(end)) = (start_time, end_time) {
+            // Create reservation with conflict detection
+            match self.create_reservation_with_conflict_check(
+                equipment_id,
+                user_id,
+                start,
+                end,
+                location,
+            ).await {
+                Ok(reservation_id) => {
+                    // Success - refresh equipment display
+                    if let Some(guild_id) = interaction.guild_id {
+                        let guild_id_i64 = guild_id.get() as i64;
+                        if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                            let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                            let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                        }
+                    }
+
+                    let start_jst = crate::time::utc_to_jst_string(start);
+                    let end_jst = crate::time::utc_to_jst_string(end);
+
+                    let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                        serenity::all::CreateInteractionResponseMessage::new()
+                            .content(format!("✅ **Reservation Created Successfully!**\n\n🆔 **Reservation ID:** {}\n📅 **Period:** {} to {} (JST)\n\nYour equipment reservation is now confirmed!", reservation_id, start_jst, end_jst))
+                            .components(vec![]),
+                    );
+                    interaction.create_response(&ctx.http, response).await?;
+                }
+                Err(err_msg) => {
+                    let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                        serenity::all::CreateInteractionResponseMessage::new()
+                            .content(format!("❌ **Failed to Create Reservation**\n\n{}", err_msg))
+                            .components(vec![]),
+                    );
+                    interaction.create_response(&ctx.http, response).await?;
+                }
+            }
+        } else {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Invalid reservation state. Please start again.")
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
+        // Clean up wizard state
+        {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            states.remove(&state_key);
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_cancel(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (interaction.user.id, interaction.token.clone());
+        
+        // Clean up wizard state
+        {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            states.remove(&state_key);
+        }
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("❌ **Reservation Cancelled**\n\nThe reservation process has been cancelled. You can start a new reservation anytime by clicking the Reserve button on any available equipment.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    // Wizard modal handlers
+
+    async fn handle_reservation_wizard_start_time_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let token = interaction.data.custom_id
+            .strip_prefix("reserve_start_time_modal:")
+            .unwrap_or("");
+        
+        let state_key = (interaction.user.id, token.to_string());
+        
+        // Extract start time from modal
+        let mut start_time_str = String::new();
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "start_time" {
+                        start_time_str = input_text.value.clone().unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Parse and validate start time using new parse_jst_string function
+        let start_utc = match crate::time::parse_jst_string(&start_time_str) {
+            Some(time) => time,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Invalid start time format. Please use YYYY-MM-DD HH:MM (JST).")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Validate start time is in the future
+        let now = chrono::Utc::now();
+        if start_utc < now {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Start time cannot be in the past. Please choose a future time.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Update wizard state and proceed to end time step
+        let (equipment_name, success) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.start_time = Some(start_utc);
+                state.step = WizardStep::EndTime;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => (eq.name, true),
+                    None => (String::new(), false)
+                }
+            } else {
+                (String::new(), false)
+            }
+        };
+
+        if success {
+            // Simulate a component interaction for the next step
+            let fake_interaction = ComponentInteractionRef {
+                user: interaction.user.clone(),
+                token: token.to_string(),
+                guild_id: interaction.guild_id,
+                channel_id: interaction.channel_id,
+            };
+            
+            self.show_end_time_step_from_modal(ctx, &fake_interaction, &equipment_name, start_utc).await?;
+        } else {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Session expired. Please start the reservation process again.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_end_time_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let token = interaction.data.custom_id
+            .strip_prefix("reserve_end_time_modal:")
+            .unwrap_or("");
+        
+        let state_key = (interaction.user.id, token.to_string());
+        
+        // Extract end time from modal
+        let mut end_time_str = String::new();
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "end_time" {
+                        end_time_str = input_text.value.clone().unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Parse and validate end time
+        let end_utc = match crate::time::parse_jst_string(&end_time_str) {
+            Some(time) => time,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Invalid end time format. Please use YYYY-MM-DD HH:MM (JST).")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Update wizard state and validate against start time
+        let (equipment_name, start_time, default_location, success) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                if let Some(start) = state.start_time {
+                    // Validate end time is after start time
+                    if end_utc <= start {
+                        let response = serenity::all::CreateInteractionResponse::Message(
+                            serenity::all::CreateInteractionResponseMessage::new()
+                                .content("❌ End time must be after start time.")
+                                .ephemeral(true),
+                        );
+                        interaction.create_response(&ctx.http, response).await?;
+                        return Ok(());
+                    }
+
+                    // Validate max 60 days duration
+                    let max_future = chrono::Utc::now() + chrono::Duration::days(60);
+                    if end_utc > max_future {
+                        let response = serenity::all::CreateInteractionResponse::Message(
+                            serenity::all::CreateInteractionResponseMessage::new()
+                                .content("❌ Reservation cannot extend more than 60 days into the future.")
+                                .ephemeral(true),
+                        );
+                        interaction.create_response(&ctx.http, response).await?;
+                        return Ok(());
+                    }
+
+                    state.end_time = Some(end_utc);
+                    state.step = WizardStep::Location;
+                    
+                    let equipment = sqlx::query!(
+                        "SELECT name, default_return_location FROM equipment WHERE id = ?",
+                        state.equipment_id
+                    )
+                    .fetch_optional(&self.db)
+                    .await?;
+
+                    match equipment {
+                        Some(eq) => (eq.name, start, eq.default_return_location, true),
+                        None => (String::new(), start, None, false)
+                    }
+                } else {
+                    (String::new(), chrono::Utc::now(), None, false)
+                }
+            } else {
+                (String::new(), chrono::Utc::now(), None, false)
+            }
+        };
+
+        if success {
+            // Simulate a component interaction for the next step
+            let fake_interaction = ComponentInteractionRef {
+                user: interaction.user.clone(),
+                token: token.to_string(),
+                guild_id: interaction.guild_id,
+                channel_id: interaction.channel_id,
+            };
+            
+            self.show_location_step_from_modal(ctx, &fake_interaction, &equipment_name, start_time, end_utc, default_location).await?;
+        } else {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Session expired. Please start the reservation process again.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reservation_wizard_location_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let token = interaction.data.custom_id
+            .strip_prefix("reserve_location_modal:")
+            .unwrap_or("");
+        
+        let state_key = (interaction.user.id, token.to_string());
+        
+        // Extract location from modal
+        let mut location = String::new();
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "location" {
+                        location = input_text.value.clone().unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Update wizard state and proceed to confirmation
+        let (equipment_name, start_time, end_time, success) = {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.location = if location.is_empty() { None } else { Some(location.clone()) };
+                state.step = WizardStep::Confirmation;
+                
+                let equipment = sqlx::query!(
+                    "SELECT name FROM equipment WHERE id = ?",
+                    state.equipment_id
+                )
+                .fetch_optional(&self.db)
+                .await?;
+
+                match equipment {
+                    Some(eq) => (eq.name, state.start_time, state.end_time, true),
+                    None => (String::new(), None, None, false)
+                }
+            } else {
+                (String::new(), None, None, false)
+            }
+        };
+
+        if success && start_time.is_some() && end_time.is_some() {
+            // Simulate a component interaction for the next step
+            let fake_interaction = ComponentInteractionRef {
+                user: interaction.user.clone(),
+                token: token.to_string(),
+                guild_id: interaction.guild_id,
+                channel_id: interaction.channel_id,
+            };
+            
+            let location_opt = if location.is_empty() { None } else { Some(location) };
+            self.show_confirmation_step_from_modal(ctx, &fake_interaction, &equipment_name, start_time.unwrap(), end_time.unwrap(), location_opt).await?;
+        } else {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Session expired. Please start the reservation process again.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
+        Ok(())
+    }
+
+    // Helper methods for modal-triggered step displays
+    async fn show_end_time_step_from_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteractionRef,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour, EditMessage};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        
+        let embed = CreateEmbed::new()
+            .title("📅 Reserve Equipment - Step 2/3")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n\n**Step 2:** Please enter the end date and time for your reservation.\n\n⏰ **Format:** YYYY-MM-DD HH:MM (JST)\n📝 **Example:** 2024-01-15 18:30\n\n⚠️ **Note:** End time must be after start time and within 60 days.", equipment_name, start_jst))
+            .color(Colour::BLUE)
+            .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("reserve_end_input:{}", interaction.token))
+                .label("📅 Enter End Time")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("reserve_back_start:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        // For modals, we need to edit the original interaction message
+        let edit = EditMessage::new()
+            .embed(embed)
+            .components(vec![buttons]);
+
+        ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
+        Ok(())
+    }
+
+    async fn show_location_step_from_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteractionRef,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        default_location: Option<String>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour, EditMessage};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        let end_jst = crate::time::utc_to_jst_string(end_time);
+        
+        let embed = CreateEmbed::new()
+            .title("📍 Reserve Equipment - Step 3/3")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n**End Time:** {}\n\n**Step 3:** Please specify the return location (optional).\n\n📍 You can use the default location or enter a custom one.", equipment_name, start_jst, end_jst))
+            .color(Colour::BLUE);
+
+        let mut buttons = vec![
+            CreateButton::new(format!("reserve_location_input:{}", interaction.token))
+                .label("📍 Enter Location")
+                .style(ButtonStyle::Primary),
+        ];
+
+        if let Some(ref default_loc) = default_location {
+            if !default_loc.is_empty() {
+                buttons.push(
+                    CreateButton::new(format!("reserve_location_default:{}", interaction.token))
+                        .label(format!("📍 Use Default ({})", default_loc))
+                        .style(ButtonStyle::Secondary)
+                );
+            }
+        }
+
+        buttons.extend_from_slice(&[
+            CreateButton::new(format!("reserve_location_skip:{}", interaction.token))
+                .label("⏭️ Skip Location")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_back_end:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let edit = EditMessage::new()
+            .embed(embed)
+            .components(vec![CreateActionRow::Buttons(buttons)]);
+
+        ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
+        Ok(())
+    }
+
+    async fn show_confirmation_step_from_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteractionRef,
+        equipment_name: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        location: Option<String>,
+    ) -> Result<()> {
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour, EditMessage};
+        
+        let start_jst = crate::time::utc_to_jst_string(start_time);
+        let end_jst = crate::time::utc_to_jst_string(end_time);
+        let location_text = location.as_deref().unwrap_or("Not specified");
+        
+        // Check for conflicts in real-time before showing confirmation
+        let state_key = (interaction.user.id, interaction.token.to_string());
+        let equipment_id = {
+            let states = RESERVATION_WIZARD_STATES.lock().await;
+            states.get(&state_key).map(|s| s.equipment_id).unwrap_or(0)
+        };
+
+        if equipment_id == 0 {
+            let edit = EditMessage::new()
+                .content("❌ Session expired. Please start the reservation process again.")
+                .components(vec![]);
+            ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
+            return Ok(());
+        }
+
+        // Check for conflicts
+        let conflicts = sqlx::query!(
+            "SELECT id, user_id, start_time, end_time FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' 
+             AND start_time < ? AND end_time > ?",
+            equipment_id,
+            end_time,
+            start_time
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        if !conflicts.is_empty() {
+            let conflict = &conflicts[0];
+            let conflict_start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
+            let conflict_end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
+            
+            let embed = CreateEmbed::new()
+                .title("⚠️ Reservation Conflict Detected")
+                .description(format!("**Equipment:** {}\n\n❌ **Conflict:** Your requested time overlaps with an existing reservation by <@{}> from {} to {}.\n\nPlease go back and choose different times.", equipment_name, conflict.user_id, conflict_start_jst, conflict_end_jst))
+                .color(Colour::RED);
+
+            let buttons = CreateActionRow::Buttons(vec![
+                CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                    .label("⬅️ Back to Times")
+                    .style(ButtonStyle::Secondary),
+                CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                    .label("❌ Cancel")
+                    .style(ButtonStyle::Danger),
+            ]);
+
+            let edit = EditMessage::new()
+                .embed(embed)
+                .components(vec![buttons]);
+
+            ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
+            return Ok(());
+        }
+        
+        let embed = CreateEmbed::new()
+            .title("✅ Confirm Reservation")
+            .description(format!("**Equipment:** {}\n**Start Time:** {}\n**End Time:** {}\n**Return Location:** {}\n\n🔍 **Conflict Check:** ✅ No conflicts detected\n\nPlease confirm your reservation details.", equipment_name, start_jst, end_jst, location_text))
+            .color(Colour::DARK_GREEN);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("reserve_confirm:{}", interaction.token))
+                .label("✅ Confirm Reservation")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                .label("❌ Cancel")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let edit = EditMessage::new()
+            .embed(embed)
+            .components(vec![buttons]);
+
+        ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
         Ok(())
     }
 }

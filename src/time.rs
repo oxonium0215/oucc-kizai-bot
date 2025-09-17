@@ -51,3 +51,20 @@ pub fn is_past_jst(utc_time: DateTime<Utc>) -> bool {
 pub fn jst_offset_string() -> &'static str {
     "JST (UTC+9)"
 }
+
+/// Parse JST date/time string and convert to UTC
+/// Format: YYYY-MM-DD HH:MM
+pub fn parse_jst_string(jst_str: &str) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = jst_str.split(&[' ', ':', '-'][..]).collect();
+    if parts.len() != 5 {
+        return None;
+    }
+
+    let year: i32 = parts[0].parse().ok()?;
+    let month: u32 = parts[1].parse().ok()?;
+    let day: u32 = parts[2].parse().ok()?;
+    let hour: u32 = parts[3].parse().ok()?;
+    let minute: u32 = parts[4].parse().ok()?;
+
+    jst_to_utc(year, month, day, hour, minute)
+}
