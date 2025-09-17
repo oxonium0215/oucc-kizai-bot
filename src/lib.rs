@@ -12,3 +12,4 @@ pub mod maintenance;
 pub mod quotas;
 pub mod quota_validator;
 pub mod class_manager;
+pub mod waitlist;

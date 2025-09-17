@@ -15,6 +15,8 @@ pub struct Guild {
     pub overdue_max_count: Option<i64>,
     pub pre_start_minutes: Option<i64>,
     pub pre_end_minutes: Option<i64>,
+    // Waitlist settings
+    pub offer_hold_minutes: Option<i64>, // Default 15 minutes for offer expiry
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -208,6 +210,32 @@ pub struct QuotaClassOverride {
     pub max_lead_time_days: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Waitlist entry - users can register interest for equipment/time windows
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct WaitlistEntry {
+    pub id: i64,
+    pub guild_id: i64,
+    pub equipment_id: i64,
+    pub user_id: i64,
+    pub desired_start_utc: DateTime<Utc>,
+    pub desired_end_utc: DateTime<Utc>,
+    pub created_at_utc: DateTime<Utc>,
+    pub canceled_at_utc: Option<DateTime<Utc>>,
+}
+
+/// Waitlist offer - system-generated offers to waitlisted users
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct WaitlistOffer {
+    pub id: i64,
+    pub waitlist_id: i64,
+    pub created_at_utc: DateTime<Utc>,
+    pub offer_expires_at_utc: DateTime<Utc>,
+    pub status: String, // pending, accepted, declined, expired
+    pub reserved_reservation_id: Option<i64>,
+    pub offered_window_start_utc: DateTime<Utc>,
+    pub offered_window_end_utc: DateTime<Utc>,
 }
 
 /// Combined quota limits after applying role and class overrides
