@@ -127,7 +127,7 @@ impl JobWorker {
 
         // Check if reservation has ended
         let now = chrono::Utc::now();
-        if reservation.end_time <= now {
+        if Self::naive_datetime_to_utc(reservation.end_time) <= now {
             warn!("Reservation {} for transfer {} has already ended", transfer.reservation_id, transfer.id);
             self.mark_transfer_expired(transfer).await?;
             return Ok(());
@@ -612,5 +612,10 @@ impl JobWorker {
 
         info!("Cancelled future reminders for reservation {}", reservation_id);
         Ok(())
+    }
+
+    /// Helper function to convert NaiveDateTime to DateTime<Utc>
+    fn naive_datetime_to_utc(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
+        DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)
     }
 }
