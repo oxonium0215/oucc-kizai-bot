@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE equipment \n             SET status = 'Available', current_location = ?, updated_at = CURRENT_TIMESTAMP\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "05d941befdf3df7e69ed6f3f946cfce2cb7646a677b0a1c84134dbbaed4d7174"
+}

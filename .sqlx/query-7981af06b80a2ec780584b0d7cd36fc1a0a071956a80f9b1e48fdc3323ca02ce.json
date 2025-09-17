@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.name FROM equipment e \n             JOIN reservations r ON e.id = r.equipment_id \n             WHERE r.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7981af06b80a2ec780584b0d7cd36fc1a0a071956a80f9b1e48fdc3323ca02ce"
+}

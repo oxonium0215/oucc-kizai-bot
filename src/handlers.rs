@@ -34,8 +34,48 @@ enum WizardStep {
     Confirmation,
 }
 
+// Overall Management state
+#[derive(Debug, Clone)]
+pub struct ManagementState {
+    equipment_filter: Option<Vec<i64>>, // Equipment IDs, None means all
+    time_filter: TimeFilter,
+    status_filter: StatusFilter,
+    page: usize,
+    items_per_page: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum TimeFilter {
+    Today,
+    Next24h,
+    Next7days,
+    Custom { start_utc: DateTime<Utc>, end_utc: DateTime<Utc> },
+    All,
+}
+
+#[derive(Debug, Clone)]
+pub enum StatusFilter {
+    Active,      // Currently loaned
+    Upcoming,    // Future reservations
+    ReturnedToday, // Returned today
+    All,
+}
+
+impl Default for ManagementState {
+    fn default() -> Self {
+        Self {
+            equipment_filter: None,
+            time_filter: TimeFilter::All,
+            status_filter: StatusFilter::All,
+            page: 0,
+            items_per_page: 10,
+        }
+    }
+}
+
 lazy_static::lazy_static! {
     static ref RESERVATION_WIZARD_STATES: Arc<Mutex<HashMap<(UserId, String), ReservationWizardState>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref MANAGEMENT_STATES: Arc<Mutex<HashMap<(GuildId, UserId, String), ManagementState>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 // Helper struct for simulating component interactions from modals
@@ -298,6 +338,30 @@ impl Handler {
                     self.handle_confirm_return(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("cancel_return:") {
                     self.handle_cancel_return_flow(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_filter_equipment:") {
+                    self.handle_mgmt_filter_equipment(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_filter_time:") {
+                    self.handle_mgmt_filter_time(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_filter_status:") {
+                    self.handle_mgmt_filter_status(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_clear_filters:") {
+                    self.handle_mgmt_clear_filters(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_page_prev:") {
+                    self.handle_mgmt_page_prev(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_page_next:") {
+                    self.handle_mgmt_page_next(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_refresh:") {
+                    self.handle_mgmt_refresh(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_export:") {
+                    self.handle_mgmt_export(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_jump:") {
+                    self.handle_mgmt_jump(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_equipment_select:") {
+                    self.handle_mgmt_equipment_select(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_time_") {
+                    self.handle_mgmt_time_select(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_status_") {
+                    self.handle_mgmt_status_select(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -325,36 +389,181 @@ impl Handler {
             return Ok(());
         }
 
-        // Create management panel with buttons
+        // Initialize management state for this user session
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            states.insert(state_key.clone(), ManagementState::default());
+        }
+
+        // Show the management dashboard
+        self.show_management_dashboard(ctx, interaction, false).await
+    }
+
+    async fn show_management_dashboard(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        is_update: bool,
+    ) -> Result<()> {
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        
+        let state = {
+            let states = MANAGEMENT_STATES.lock().await;
+            states.get(&state_key).cloned().unwrap_or_default()
+        };
+
+        // Create dashboard embed
         use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
         
-        let embed = CreateEmbed::new()
-            .title("⚙️ Overall Management")
-            .description("Equipment and organization management panel")
+        let mut embed = CreateEmbed::new()
+            .title("⚙️ Overall Management Dashboard")
             .color(Colour::BLUE);
 
-        let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new("mgmt_add_tag")
-                .label("🏷️ Add Tag")
+        // Get filter descriptions for display
+        let equipment_desc = if let Some(ref eq_ids) = state.equipment_filter {
+            if eq_ids.is_empty() {
+                "All Equipment".to_string()
+            } else {
+                format!("{} selected equipment", eq_ids.len())
+            }
+        } else {
+            "All Equipment".to_string()
+        };
+
+        let time_desc = match &state.time_filter {
+            TimeFilter::Today => "Today".to_string(),
+            TimeFilter::Next24h => "Next 24 hours".to_string(),
+            TimeFilter::Next7days => "Next 7 days".to_string(),
+            TimeFilter::Custom { start_utc, end_utc } => {
+                format!("{} to {}", 
+                    crate::time::utc_to_jst_string(*start_utc),
+                    crate::time::utc_to_jst_string(*end_utc))
+            },
+            TimeFilter::All => "All Time".to_string(),
+        };
+
+        let status_desc = match state.status_filter {
+            StatusFilter::Active => "Active Loans".to_string(),
+            StatusFilter::Upcoming => "Upcoming Reservations".to_string(),
+            StatusFilter::ReturnedToday => "Returned Today".to_string(),
+            StatusFilter::All => "All Statuses".to_string(),
+        };
+
+        embed = embed.field("🔧 Current Filters", format!(
+            "**Equipment:** {}\n**Time:** {}\n**Status:** {}",
+            equipment_desc, time_desc, status_desc
+        ), false);
+
+        // Get reservations based on filters
+        let reservations = self.get_filtered_reservations(guild_id, &state).await?;
+        let total_count = reservations.len();
+        let start_idx = state.page * state.items_per_page;
+        let end_idx = std::cmp::min(start_idx + state.items_per_page, total_count);
+        let page_reservations = &reservations[start_idx..end_idx];
+
+        if page_reservations.is_empty() {
+            embed = embed.field("📋 Reservations", "No reservations match the current filters.", false);
+        } else {
+            let mut reservation_list = String::new();
+            for (idx, res) in page_reservations.iter().enumerate() {
+                let global_idx = start_idx + idx + 1;
+                let equipment_name = self.get_equipment_name(res.equipment_id).await?;
+                let status = self.get_reservation_display_status(res).await;
+                let start_jst = crate::time::utc_to_jst_string(res.start_time);
+                let end_jst = crate::time::utc_to_jst_string(res.end_time);
+                let location = res.location.as_deref().unwrap_or("Not specified");
+
+                reservation_list.push_str(&format!(
+                    "**{}. {}** {} → {}\n<@{}> • {} • {}\n\n",
+                    global_idx, equipment_name, start_jst, end_jst, 
+                    res.user_id, status, location
+                ));
+            }
+
+            embed = embed.field(
+                format!("📋 Reservations ({}-{} of {})", start_idx + 1, end_idx, total_count),
+                reservation_list,
+                false
+            );
+        }
+
+        // Create filter controls
+        let filter_row = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("mgmt_filter_equipment:{}", interaction.token))
+                .label("🔧 Equipment Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new("mgmt_add_location")
-                .label("📍 Add Location")
+            CreateButton::new(format!("mgmt_filter_time:{}", interaction.token))
+                .label("📅 Time Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new("mgmt_add_equipment")
-                .label("📦 Add Equipment")
+            CreateButton::new(format!("mgmt_filter_status:{}", interaction.token))
+                .label("📊 Status Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new("mgmt_refresh_display")
-                .label("🔄 Refresh Display")
-                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("mgmt_clear_filters:{}", interaction.token))
+                .label("🗑️ Clear All")
+                .style(ButtonStyle::Danger),
         ]);
 
-        let response = serenity::all::CreateInteractionResponse::Message(
-            serenity::all::CreateInteractionResponseMessage::new()
-                .embed(embed)
-                .components(vec![buttons])
-                .ephemeral(true),
-        );
-        interaction.create_response(&ctx.http, response).await?;
+        // Create pagination controls
+        let mut pagination_buttons = vec![];
+        if state.page > 0 {
+            pagination_buttons.push(
+                CreateButton::new(format!("mgmt_page_prev:{}", interaction.token))
+                    .label("⬅️ Previous")
+                    .style(ButtonStyle::Secondary)
+            );
+        }
+        if end_idx < total_count {
+            pagination_buttons.push(
+                CreateButton::new(format!("mgmt_page_next:{}", interaction.token))
+                    .label("➡️ Next")
+                    .style(ButtonStyle::Secondary)
+            );
+        }
+
+        let pagination_row = if !pagination_buttons.is_empty() {
+            Some(CreateActionRow::Buttons(pagination_buttons))
+        } else {
+            None
+        };
+
+        // Create action buttons
+        let action_row = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("mgmt_refresh:{}", interaction.token))
+                .label("🔄 Refresh Display")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("mgmt_export:{}", interaction.token))
+                .label("📊 Export CSV")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_jump:{}", interaction.token))
+                .label("🔗 Jump to Equipment")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let mut components = vec![filter_row];
+        if let Some(pagination) = pagination_row {
+            components.push(pagination);
+        }
+        components.push(action_row);
+
+        if is_update {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(components),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        } else {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(components)
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
         Ok(())
     }
 
@@ -3824,6 +4033,712 @@ impl Handler {
                 if let Err(e) = equipment_renderer.reconcile_equipment_display(ctx, guild_id, channel_id).await {
                     error!("Failed to reconcile equipment channel: {}", e);
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_filtered_reservations(
+        &self,
+        guild_id: i64,
+        state: &ManagementState,
+    ) -> Result<Vec<crate::models::Reservation>> {
+        // For now, implement a simple version that gets all reservations
+        // In production, you'd want proper dynamic query building with the filters
+        let reservations = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, r.status, r.created_at, r.updated_at, r.returned_at, r.return_location 
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id 
+             WHERE e.guild_id = ? AND r.status = 'Confirmed'
+             ORDER BY r.start_time ASC",
+            guild_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        // Convert to proper Reservation structs
+        let reservations: Vec<crate::models::Reservation> = reservations.into_iter().map(|row| {
+            use chrono::{DateTime, Utc};
+            
+            crate::models::Reservation {
+                id: row.id.unwrap_or(0),
+                equipment_id: row.equipment_id,
+                user_id: row.user_id,
+                start_time: DateTime::<Utc>::from_naive_utc_and_offset(row.start_time, Utc),
+                end_time: DateTime::<Utc>::from_naive_utc_and_offset(row.end_time, Utc),
+                location: row.location,
+                status: row.status,
+                created_at: DateTime::<Utc>::from_naive_utc_and_offset(row.created_at.unwrap_or_default(), Utc),
+                updated_at: DateTime::<Utc>::from_naive_utc_and_offset(row.updated_at.unwrap_or_default(), Utc),
+                returned_at: row.returned_at.map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)),
+                return_location: row.return_location,
+            }
+        }).collect();
+
+        // Apply filters in memory for now (not optimal for large datasets)
+        let filtered: Vec<_> = reservations.into_iter()
+            .filter(|r| self.matches_equipment_filter(r, &state.equipment_filter))
+            .filter(|r| self.matches_time_filter(r, &state.time_filter))
+            .filter(|r| self.matches_status_filter(r, &state.status_filter))
+            .collect();
+
+        Ok(filtered)
+    }
+
+    pub fn matches_equipment_filter(&self, reservation: &crate::models::Reservation, filter: &Option<Vec<i64>>) -> bool {
+        match filter {
+            None => true, // No filter means all equipment
+            Some(ids) => ids.is_empty() || ids.contains(&reservation.equipment_id),
+        }
+    }
+
+    pub fn matches_time_filter(&self, reservation: &crate::models::Reservation, filter: &TimeFilter) -> bool {
+        match filter {
+            TimeFilter::All => true,
+            TimeFilter::Today => {
+                let today_start = chrono::Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+                let today_end = today_start + chrono::Duration::days(1);
+                let today_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_start, Utc);
+                let today_end_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_end, Utc);
+                // Reservation overlaps with today
+                reservation.start_time <= today_end_utc && reservation.end_time >= today_start_utc
+            },
+            TimeFilter::Next24h => {
+                let now = chrono::Utc::now();
+                let next_24h = now + chrono::Duration::hours(24);
+                reservation.start_time <= next_24h && reservation.start_time >= now
+            },
+            TimeFilter::Next7days => {
+                let now = chrono::Utc::now();
+                let next_7days = now + chrono::Duration::days(7);
+                reservation.start_time <= next_7days && reservation.start_time >= now
+            },
+            TimeFilter::Custom { start_utc, end_utc } => {
+                reservation.start_time <= *end_utc && reservation.end_time >= *start_utc
+            },
+        }
+    }
+
+    pub fn matches_status_filter(&self, reservation: &crate::models::Reservation, filter: &StatusFilter) -> bool {
+        let now = chrono::Utc::now();
+        
+        match filter {
+            StatusFilter::All => true,
+            StatusFilter::Active => {
+                // Currently active and not returned
+                reservation.returned_at.is_none() 
+                    && now >= reservation.start_time 
+                    && now <= reservation.end_time
+            },
+            StatusFilter::Upcoming => {
+                // Future reservations
+                now < reservation.start_time
+            },
+            StatusFilter::ReturnedToday => {
+                // Returned today
+                if let Some(returned_at) = reservation.returned_at {
+                    let today_start = chrono::Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+                    let today_end = today_start + chrono::Duration::days(1);
+                    let today_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_start, Utc);
+                    let today_end_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_end, Utc);
+                    returned_at >= today_start_utc && returned_at < today_end_utc
+                } else {
+                    false
+                }
+            },
+        }
+    }
+
+    pub async fn get_equipment_name(&self, equipment_id: i64) -> Result<String> {
+        let name: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM equipment WHERE id = ?"
+        )
+        .bind(equipment_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        Ok(name.unwrap_or_else(|| format!("Equipment #{}", equipment_id)))
+    }
+
+    pub async fn get_reservation_display_status(&self, reservation: &crate::models::Reservation) -> String {
+        let now = chrono::Utc::now();
+        
+        if let Some(_) = reservation.returned_at {
+            "Returned".to_string()
+        } else if now >= reservation.start_time && now <= reservation.end_time {
+            "Active".to_string()
+        } else if now < reservation.start_time {
+            "Upcoming".to_string()
+        } else {
+            "Overdue".to_string()
+        }
+    }
+
+    async fn handle_mgmt_filter_equipment(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Get equipment for selection
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let equipment = sqlx::query!(
+            "SELECT id, name FROM equipment WHERE guild_id = ? ORDER BY name",
+            guild_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        if equipment.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ No equipment found. Add equipment first using the Overall Management panel.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, CreateActionRow};
+
+        let mut options = vec![
+            CreateSelectMenuOption::new("All Equipment", "all")
+                .description("Show reservations for all equipment")
+        ];
+
+        for eq in equipment.iter().take(24) { // Discord limit of 25 options
+            let eq_id = eq.id.unwrap_or(0); // Handle potential NULL ids
+            options.push(
+                CreateSelectMenuOption::new(&eq.name, eq_id.to_string())
+                    .description(format!("Filter by {}", eq.name))
+            );
+        }
+
+        let options_len = options.len();
+        let select = CreateSelectMenu::new(
+            format!("mgmt_equipment_select:{}", interaction.token),
+            CreateSelectMenuKind::String { options }
+        )
+        .placeholder("Select equipment to filter by...")
+        .min_values(1)
+        .max_values(std::cmp::min(options_len as u8, 25));
+
+        let components = vec![CreateActionRow::SelectMenu(select)];
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🔧 **Equipment Filter**\nSelect which equipment to show reservations for:")
+                .components(components),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_mgmt_filter_time(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateButton, CreateActionRow, ButtonStyle};
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("mgmt_time_today:{}", interaction.token))
+                .label("📅 Today")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_time_24h:{}", interaction.token))
+                .label("🕐 Next 24h")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_time_7d:{}", interaction.token))
+                .label("📊 Next 7 days")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_time_custom:{}", interaction.token))
+                .label("⚙️ Custom")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("mgmt_time_all:{}", interaction.token))
+                .label("🌐 All Time")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("📅 **Time Filter**\nSelect time range for reservations:")
+                .components(vec![buttons]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_mgmt_filter_status(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateButton, CreateActionRow, ButtonStyle};
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("mgmt_status_active:{}", interaction.token))
+                .label("🟢 Active")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("mgmt_status_upcoming:{}", interaction.token))
+                .label("🟡 Upcoming")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_status_returned:{}", interaction.token))
+                .label("🔄 Returned Today")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_status_all:{}", interaction.token))
+                .label("📊 All Status")
+                .style(ButtonStyle::Primary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("📊 **Status Filter**\nSelect reservation status:")
+                .components(vec![buttons]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_mgmt_clear_filters(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Reset filters to default
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            states.insert(state_key, ManagementState::default());
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_mgmt_page_prev(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Update page in state
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                if state.page > 0 {
+                    state.page -= 1;
+                }
+            }
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_mgmt_page_next(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Update page in state
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.page += 1;
+            }
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_mgmt_refresh(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Trigger reconcile for the reservation channel
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🔄 Refreshing display... Please wait.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+
+        // Perform the refresh
+        let result = self.reconcile_guild_display(ctx, guild_id).await;
+
+        let followup_content = match result {
+            Ok(_) => "✅ Display refreshed successfully!",
+            Err(e) => {
+                error!("Failed to refresh display: {}", e);
+                "❌ Failed to refresh display. Check logs for details."
+            }
+        };
+
+        // Send follow-up message
+        interaction.edit_response(&ctx.http, 
+            serenity::all::EditInteractionResponse::new()
+                .content(followup_content)
+        ).await?;
+
+        Ok(())
+    }
+
+    async fn handle_mgmt_export(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("📊 Generating CSV export... Please wait.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+
+        // Get filtered reservations for export
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        
+        let state = {
+            let states = MANAGEMENT_STATES.lock().await;
+            states.get(&state_key).cloned().unwrap_or_default()
+        };
+
+        let reservations = self.get_filtered_reservations(guild_id, &state).await?;
+        let reservation_count = reservations.len();
+        
+        // Generate CSV content
+        let mut csv_content = String::new();
+        csv_content.push_str("Reservation ID,Equipment,User ID,Start Time (JST),End Time (JST),Start Time (UTC),End Time (UTC),Status,Location,Returned At (JST),Return Location\n");
+        
+        for res in &reservations {
+            let equipment_name = self.get_equipment_name(res.equipment_id).await?;
+            let status = self.get_reservation_display_status(&res).await;
+            let start_jst = crate::time::utc_to_jst_string(res.start_time);
+            let end_jst = crate::time::utc_to_jst_string(res.end_time);
+            let location = res.location.as_deref().unwrap_or("Not specified");
+            let returned_jst = res.returned_at.map(|dt| crate::time::utc_to_jst_string(dt)).unwrap_or_default();
+            let return_location = res.return_location.as_deref().unwrap_or("");
+            
+            csv_content.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                res.id,
+                equipment_name.replace(",", ";"), // Escape commas
+                res.user_id,
+                start_jst,
+                end_jst,
+                res.start_time.format("%Y-%m-%d %H:%M:%S UTC"),
+                res.end_time.format("%Y-%m-%d %H:%M:%S UTC"),
+                status,
+                location.replace(",", ";"), // Escape commas
+                returned_jst,
+                return_location.replace(",", ";") // Escape commas
+            ));
+        }
+
+        // For now, show a summary instead of actual file download
+        let summary = format!(
+            "📊 **CSV Export Summary**\n\
+            **Total Reservations:** {}\n\
+            **Applied Filters:**\n\
+            • Equipment: {}\n\
+            • Time: {}\n\
+            • Status: {}\n\n\
+            *CSV download feature coming soon. Data preview:*\n\
+            ```\n{}```",
+            reservation_count,
+            if state.equipment_filter.is_some() && !state.equipment_filter.as_ref().unwrap().is_empty() {
+                format!("{} selected", state.equipment_filter.as_ref().unwrap().len())
+            } else {
+                "All".to_string()
+            },
+            match state.time_filter {
+                TimeFilter::Today => "Today",
+                TimeFilter::Next24h => "Next 24h",
+                TimeFilter::Next7days => "Next 7 days",
+                TimeFilter::Custom { .. } => "Custom",
+                TimeFilter::All => "All Time",
+            },
+            match state.status_filter {
+                StatusFilter::Active => "Active",
+                StatusFilter::Upcoming => "Upcoming",
+                StatusFilter::ReturnedToday => "Returned Today",
+                StatusFilter::All => "All",
+            },
+            csv_content.lines().take(6).collect::<Vec<_>>().join("\n")
+        );
+
+        // Send follow-up message
+        interaction.edit_response(&ctx.http, 
+            serenity::all::EditInteractionResponse::new()
+                .content(summary)
+        ).await?;
+
+        Ok(())
+    }
+
+    async fn handle_mgmt_jump(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🔗 Jump to equipment feature coming soon. For now, navigate manually to the reservation channel.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+
+        Ok(())
+    }
+
+    async fn handle_mgmt_equipment_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::ComponentInteractionDataKind;
+        
+        // Extract selected equipment IDs
+        let selected_equipment = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            if values.contains(&"all".to_string()) {
+                None // All equipment
+            } else {
+                Some(values.iter().filter_map(|v| v.parse::<i64>().ok()).collect::<Vec<_>>())
+            }
+        } else {
+            return Ok(());
+        };
+
+        // Update filter state
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.equipment_filter = selected_equipment;
+                state.page = 0; // Reset to first page
+            }
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_mgmt_time_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Determine which time filter was selected
+        let time_filter = if interaction.data.custom_id.contains("mgmt_time_today:") {
+            TimeFilter::Today
+        } else if interaction.data.custom_id.contains("mgmt_time_24h:") {
+            TimeFilter::Next24h
+        } else if interaction.data.custom_id.contains("mgmt_time_7d:") {
+            TimeFilter::Next7days
+        } else if interaction.data.custom_id.contains("mgmt_time_custom:") {
+            // For now, just use All as custom implementation would need a modal
+            TimeFilter::All
+        } else if interaction.data.custom_id.contains("mgmt_time_all:") {
+            TimeFilter::All
+        } else {
+            TimeFilter::All
+        };
+
+        // Update filter state
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.time_filter = time_filter;
+                state.page = 0; // Reset to first page
+            }
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_mgmt_status_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Determine which status filter was selected
+        let status_filter = if interaction.data.custom_id.contains("mgmt_status_active:") {
+            StatusFilter::Active
+        } else if interaction.data.custom_id.contains("mgmt_status_upcoming:") {
+            StatusFilter::Upcoming
+        } else if interaction.data.custom_id.contains("mgmt_status_returned:") {
+            StatusFilter::ReturnedToday
+        } else {
+            StatusFilter::All
+        };
+
+        // Update filter state
+        let state_key = (interaction.guild_id.unwrap(), interaction.user.id, interaction.token.clone());
+        {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.status_filter = status_filter;
+                state.page = 0; // Reset to first page
+            }
+        }
+
+        // Update dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn reconcile_guild_display(&self, ctx: &Context, guild_id: i64) -> Result<()> {
+        let guild = sqlx::query!(
+            "SELECT reservation_channel_id FROM guilds WHERE id = ?",
+            guild_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(guild_data) = guild {
+            if let Some(channel_id) = guild_data.reservation_channel_id {
+                // Trigger equipment rendering reconcile
+                let equipment_renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                equipment_renderer.reconcile_equipment_display(ctx, guild_id, channel_id).await?;
             }
         }
 

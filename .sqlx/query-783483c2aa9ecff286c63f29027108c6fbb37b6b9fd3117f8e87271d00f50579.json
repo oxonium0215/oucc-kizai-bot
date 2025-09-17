@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT location FROM reservations WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "location",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "783483c2aa9ecff286c63f29027108c6fbb37b6b9fd3117f8e87271d00f50579"
+}
