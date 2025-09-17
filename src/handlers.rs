@@ -2,6 +2,7 @@ use anyhow::Result;
 use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
+use serenity::all::ComponentInteractionDataKind;
 use sqlx::SqlitePool;
 use tracing::{error, info};
 use std::collections::HashMap;
@@ -279,6 +280,18 @@ impl Handler {
                     self.handle_reservation_wizard_confirm(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("reserve_cancel:") {
                     self.handle_reservation_wizard_cancel(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_reservation_select:") {
+                    self.handle_change_reservation_select(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_res_time:") {
+                    self.handle_change_reservation_time(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_res_location:") {
+                    self.handle_change_reservation_location(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("cancel_res:") {
+                    self.handle_cancel_reservation_confirm(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("confirm_cancel_res:") {
+                    self.handle_confirm_cancel_reservation(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("abort_cancel_res:") {
+                    self.handle_abort_cancel_reservation(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -530,6 +543,10 @@ impl Handler {
                     self.handle_reservation_wizard_end_time_modal(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("reserve_location_modal:") {
                     self.handle_reservation_wizard_location_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_time_modal:") {
+                    self.handle_change_time_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_location_modal:") {
+                    self.handle_change_location_modal(ctx, interaction).await?
                 } else {
                     error!("Unknown modal interaction: {}", interaction.data.custom_id);
                 }
@@ -869,11 +886,68 @@ impl Handler {
             return Ok(());
         }
 
-        // For now, just respond with a placeholder message
-        // TODO: Implement equipment check/change functionality in future PR
+        let user_id = interaction.user.id.get() as i64;
+        
+        // Get user's active reservations for this equipment
+        let reservations = sqlx::query!(
+            "SELECT r.id, r.start_time, r.end_time, r.location, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.equipment_id = ? AND r.user_id = ? AND r.status = 'Confirmed'
+             ORDER BY r.start_time ASC",
+            equipment_id,
+            user_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        if reservations.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You don't have any active reservations for this equipment.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Show reservation selection menu
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, Colour};
+        
+        let equipment_name = &reservations[0].equipment_name;
+        
+        let embed = CreateEmbed::new()
+            .title("🔄 Manage Reservations")
+            .description(format!("**Equipment:** {}\n\nSelect a reservation to change or cancel:", equipment_name))
+            .color(Colour::BLUE);
+
+        let mut options = Vec::new();
+        for reservation in &reservations {
+            let reservation_id = reservation.id.unwrap_or(0); // ID should always be present for confirmed reservations
+            let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+            let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+            let location_text = reservation.location.as_deref().unwrap_or("No location");
+            
+            options.push(
+                CreateSelectMenuOption::new(
+                    format!("{} to {} - {}", start_jst, end_jst, location_text),
+                    format!("reservation_{}", reservation_id)
+                )
+                .description(format!("ID: {}", reservation_id))
+            );
+        }
+
+        let select_menu = CreateSelectMenu::new(
+            format!("change_reservation_select:{}", interaction.token),
+            CreateSelectMenuKind::String { options }
+        )
+        .placeholder("Select a reservation to manage...")
+        .max_values(1);
+
         let response = serenity::all::CreateInteractionResponse::Message(
             serenity::all::CreateInteractionResponseMessage::new()
-                .content("🔄 Equipment check/change functionality coming soon!")
+                .embed(embed)
+                .components(vec![CreateActionRow::SelectMenu(select_menu)])
                 .ephemeral(true),
         );
         interaction.create_response(&ctx.http, response).await?;
@@ -2704,6 +2778,547 @@ impl Handler {
             .components(vec![buttons]);
 
         ctx.http.edit_original_interaction_response(&interaction.token, &edit, Vec::new()).await?;
+        Ok(())
+    }
+
+    // Change reservation handlers
+
+    async fn handle_change_reservation_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Extract the selected reservation ID
+        let reservation_id_str = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            values.first()
+                .and_then(|v| v.strip_prefix("reservation_"))
+                .unwrap_or("")
+        } else {
+            ""
+        };
+        
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in select: {:?}", interaction.data.kind);
+            return Ok(());
+        }
+
+        // Get reservation details
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or has been cancelled.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Verify ownership (allow admin override)
+        let user_id = interaction.user.id.get() as i64;
+        let is_owner = reservation.user_id == user_id;
+        let is_admin = utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await?;
+
+        if !is_owner && !is_admin {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You can only manage your own reservations.")
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Show management options
+        let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+        let location_text = reservation.location.as_deref().unwrap_or("Not specified");
+
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let embed = CreateEmbed::new()
+            .title("🔧 Manage Reservation")
+            .description(format!("**Equipment:** {}\n**Period:** {} to {}\n**Location:** {}\n\nWhat would you like to do?", 
+                reservation.equipment_name, start_jst, end_jst, location_text))
+            .color(Colour::BLUE);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("change_res_time:{}", reservation_id))
+                .label("📅 Change Time")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("change_res_location:{}", reservation_id))
+                .label("📍 Change Location")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("cancel_res:{}", reservation_id))
+                .label("❌ Cancel Reservation")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_change_reservation_time(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("change_res_time:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in change time button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Get reservation details for pre-filling
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.location, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Pre-fill modal with current values
+        let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("change_time_modal:{}", reservation_id), 
+            format!("Change Reservation Time - {}", reservation.equipment_name)
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "start_time", "New Start Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .value(start_jst)
+                    .required(true),
+            ),
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "end_time", "New End Time")
+                    .placeholder("YYYY-MM-DD HH:MM (JST)")
+                    .value(end_jst)
+                    .required(true),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_change_reservation_location(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("change_res_location:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in change location button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Get current location for pre-filling
+        let reservation = sqlx::query!(
+            "SELECT r.location, e.name as equipment_name 
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        use serenity::all::{CreateModal, CreateInputText, InputTextStyle};
+        
+        let modal = CreateModal::new(
+            format!("change_location_modal:{}", reservation_id), 
+            format!("Change Return Location - {}", reservation.equipment_name)
+        )
+        .components(vec![
+            serenity::all::CreateActionRow::InputText(
+                CreateInputText::new(InputTextStyle::Short, "location", "New Return Location")
+                    .placeholder("Leave empty to remove location")
+                    .value(reservation.location.unwrap_or_default())
+                    .required(false),
+            ),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_cancel_reservation_confirm(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("cancel_res:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in cancel button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Get reservation details for confirmation
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, e.name as equipment_name
+             FROM reservations r 
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found or already cancelled.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Show confirmation dialog
+        let start_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.start_time));
+        let end_jst = crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(reservation.end_time));
+
+        use serenity::all::{CreateEmbed, CreateActionRow, CreateButton, ButtonStyle, Colour};
+        
+        let embed = CreateEmbed::new()
+            .title("⚠️ Cancel Reservation")
+            .description(format!("**Equipment:** {}\n**Period:** {} to {}\n\n❌ **Warning:** This action cannot be undone!\n\nAre you sure you want to cancel this reservation?", 
+                reservation.equipment_name, start_jst, end_jst))
+            .color(Colour::RED);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("confirm_cancel_res:{}", reservation_id))
+                .label("❌ Yes, Cancel")
+                .style(ButtonStyle::Danger),
+            CreateButton::new(format!("abort_cancel_res:{}", reservation_id))
+                .label("↩️ No, Go Back")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .components(vec![buttons]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_confirm_cancel_reservation(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("confirm_cancel_res:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in confirm cancel: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        let user_id = interaction.user.id.get() as i64;
+        
+        // Cancel the reservation
+        match self.cancel_reservation(reservation_id, user_id).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("✅ **Reservation Cancelled Successfully!**\n\nYour reservation has been cancelled.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ **Failed to Cancel Reservation**\n\n{}", err_msg))
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_abort_cancel_reservation(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("↩️ **Cancellation Aborted**\n\nYour reservation remains active.")
+                .components(vec![]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_change_time_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("change_time_modal:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in change time modal: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Extract modal data
+        let mut start_time_str = String::new();
+        let mut end_time_str = String::new();
+
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    match input_text.custom_id.as_str() {
+                        "start_time" => start_time_str = input_text.value.clone().unwrap_or_default(),
+                        "end_time" => end_time_str = input_text.value.clone().unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Parse and validate times
+        let (start_utc, end_utc) = match self.parse_and_validate_times(&start_time_str, &end_time_str) {
+            Ok(times) => times,
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ {}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Get current location
+        let current_location = sqlx::query_scalar!(
+            "SELECT location FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?
+        .flatten();
+
+        // Update reservation with conflict detection
+        match self.update_reservation_with_conflict_check(
+            reservation_id,
+            start_utc,
+            end_utc,
+            current_location,
+        ).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let start_jst = crate::time::utc_to_jst_string(start_utc);
+                let end_jst = crate::time::utc_to_jst_string(end_utc);
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ **Reservation Time Updated!**\n\n📅 **New Period:** {} to {} (JST)", start_jst, end_jst))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ **Failed to Update Reservation**\n\n{}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_change_location_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        let reservation_id_str = interaction.data.custom_id
+            .strip_prefix("change_location_modal:")
+            .unwrap_or("");
+            
+        let reservation_id: i64 = reservation_id_str.parse().unwrap_or(0);
+        if reservation_id == 0 {
+            error!("Invalid reservation ID in change location modal: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // Extract location from modal
+        let mut location = String::new();
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "location" {
+                        location = input_text.value.clone().unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+        }
+
+        let location_opt = if location.is_empty() { None } else { Some(location.clone()) };
+
+        // Get current times
+        let current = sqlx::query!(
+            "SELECT start_time, end_time FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let current = match current {
+            Some(res) => res,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        let start_utc = Self::naive_datetime_to_utc(current.start_time);
+        let end_utc = Self::naive_datetime_to_utc(current.end_time);
+
+        // Update reservation location
+        match self.update_reservation_with_conflict_check(
+            reservation_id,
+            start_utc,
+            end_utc,
+            location_opt.clone(),
+        ).await {
+            Ok(_) => {
+                // Success - refresh equipment display
+                if let Some(guild_id) = interaction.guild_id {
+                    let guild_id_i64 = guild_id.get() as i64;
+                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
+                    }
+                }
+
+                let location_text = location_opt.as_deref().unwrap_or("Not specified");
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ **Reservation Location Updated!**\n\n📍 **New Location:** {}", location_text))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(err_msg) => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("❌ **Failed to Update Location**\n\n{}", err_msg))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
         Ok(())
     }
 }
