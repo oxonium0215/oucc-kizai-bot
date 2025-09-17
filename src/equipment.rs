@@ -312,6 +312,14 @@ impl EquipmentRenderer {
                     .style(ButtonStyle::Secondary)
             );
 
+            // Transfer button for equipment with active/upcoming reservations
+            // Permission checks will be done in the handler
+            buttons.push(
+                CreateButton::new(format!("transfer_{}", equipment.id))
+                    .label("🔄 Transfer")
+                    .style(ButtonStyle::Secondary)
+            );
+
             // Return button for currently loaned equipment
             if equipment.status == "Loaned" {
                 buttons.push(

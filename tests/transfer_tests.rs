@@ -115,11 +115,13 @@ pub async fn create_transfer_request(
     let expires_at = calculate_transfer_expiry(now);
     
     let result = sqlx::query!(
-        "INSERT INTO transfer_requests (reservation_id, from_user_id, to_user_id, expires_at, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'Pending', ?, ?) RETURNING id",
+        "INSERT INTO transfer_requests 
+         (reservation_id, from_user_id, to_user_id, requested_by_user_id, execute_at_utc, note, expires_at, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, ?, 'Pending', ?, ?) RETURNING id",
         reservation_id,
         from_user_id,
         to_user_id,
+        from_user_id, // requested_by same as from for direct transfers
         expires_at,
         now,
         now
@@ -129,16 +131,16 @@ pub async fn create_transfer_request(
     
     tx.commit().await?;
     
-    Ok(TransferRequest {
-        id: result.id,
-        reservation_id,
-        from_user_id,
-        to_user_id,
-        expires_at,
-        status: "Pending".to_string(),
-        created_at: now,
-        updated_at: now,
-    })
+    // Fetch the created transfer request
+    let transfer = sqlx::query_as!(
+        TransferRequest,
+        "SELECT * FROM transfer_requests WHERE id = ?",
+        result.id
+    )
+    .fetch_one(db)
+    .await?;
+    
+    Ok(transfer)
 }
 
 /// Update transfer status with validation
