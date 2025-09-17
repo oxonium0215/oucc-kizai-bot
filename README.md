@@ -13,8 +13,130 @@ A comprehensive Discord bot for managing equipment reservations and lending in t
 - **Permission Management**: User-level reservation management with admin override capabilities
 - **Audit Logging**: Complete equipment operation history in equipment_logs table
 - **Live Embed Updates**: Equipment availability refreshes automatically after reservation changes
-- **Background Jobs**: Automated reminders and notifications (future features)
+- **Notification System**: Automated reminders via DM with channel fallback for reservation events
 - **Self-Healing**: Automatic message synchronization and repair on restart
+
+## Notifications & Reminders
+
+The bot provides a comprehensive notification system that keeps users informed about their reservations while being respectful of Discord's rate limits and user preferences.
+
+### Reminder Types
+
+#### Pre-Start Reminder
+- **When**: Configurable minutes before reservation starts (default: 15 minutes)
+- **Purpose**: Reminds users their reservation is about to begin
+- **Message**: Includes equipment name and start time in JST
+
+#### Start Reminder  
+- **When**: At the exact reservation start time
+- **Purpose**: Notifies users their reservation has begun
+- **Message**: Confirms reservation is now active
+
+#### Pre-End Reminder
+- **When**: Configurable minutes before reservation ends (default: 15 minutes)  
+- **Purpose**: Reminds users to prepare for return
+- **Message**: Includes equipment name and end time in JST
+
+#### Overdue Reminders
+- **When**: After reservation end time passes without return
+- **Frequency**: Configurable intervals (default: every 12 hours)
+- **Limit**: Configurable maximum count (default: 3 reminders)
+- **Purpose**: Encourages timely equipment return
+
+### Delivery Methods
+
+#### Primary: Direct Messages (DM)
+- **Preferred Method**: All reminders are sent as DMs first
+- **Privacy Friendly**: Keeps reservation details private
+- **User Control**: Users can disable DMs if preferred
+
+#### Fallback: Channel Mentions
+- **When DMs Fail**: If user has DMs disabled or bot lacks DM permissions
+- **Configurable**: Can be enabled/disabled per guild in `/setup`
+- **Non-Intrusive**: Short mentions with essential information only
+- **Format**: `@user Equipment reminder: [brief message]`
+
+#### Failed Delivery Handling
+- **Graceful Degradation**: Records delivery attempt as "FAILED"
+- **No Spam**: Will not retry failed deliveries automatically
+- **Admin Visibility**: Failed deliveries can be tracked in database
+
+### Configuration
+
+#### During Setup (`/setup` command)
+- **DM Fallback**: Enable/disable channel mentions when DMs fail
+- **Pre-Start Timing**: 5, 15, or 30 minutes before start
+- **Pre-End Timing**: 5, 15, or 30 minutes before end  
+- **Overdue Frequency**: Every 6, 12, or 24 hours
+- **Overdue Limit**: Maximum number of overdue reminders
+
+#### Default Settings
+```
+DM Fallback: Enabled
+Pre-Start: 15 minutes
+Pre-End: 15 minutes  
+Overdue: Every 12 hours (max 3 times)
+```
+
+### Message Examples
+
+#### Pre-End Reminder (DM)
+```
+📅 リマインダー: 「Canon EOS R5」の貸出期限まで15分です。
+返却時刻: 2024/01/15 17:00
+```
+
+#### Overdue Reminder (DM)
+```
+⚠️ 返却遅延 #2: 「Canon EOS R5」の返却期限が過ぎています。
+期限: 2024/01/15 17:00
+```
+
+#### Channel Fallback (when DM fails)
+```
+<@user123> 📅 リマインダー: 「Canon EOS R5」の貸出期限まで15分です。
+返却時刻: 2024/01/15 17:00
+```
+
+### Technical Implementation
+
+#### Idempotency
+- **Duplicate Prevention**: Each reminder type is sent only once per reservation
+- **Database Tracking**: `sent_reminders` table prevents duplicates
+- **Safe Retries**: Job system can safely retry without spam
+
+#### Time Handling
+- **UTC Storage**: All times stored in UTC for consistency
+- **JST Display**: User-facing messages show JST (UTC+9)
+- **Clock Jump Safe**: Handles system clock changes gracefully
+
+#### Performance
+- **Lightweight Scheduler**: Checks for due reminders every minute
+- **Efficient Queries**: Optimized database queries with proper indexing
+- **Rate Limit Aware**: Respects Discord's API rate limits
+
+### Troubleshooting
+
+#### "I'm not receiving reminders"
+1. **Check DM Settings**: Ensure you haven't disabled DMs from server members
+2. **Check Channel Fallback**: Look for mentions in the reservation channel
+3. **Verify Timing**: Reminders are only sent for future reservations
+4. **Admin Check**: Ask admin if DM fallback is enabled for the server
+
+#### "Reminders sent to wrong time"
+- **Time Zone**: All times are displayed in JST (UTC+9)
+- **Configuration**: Check if reminder timing was customized during setup
+- **System Clock**: Server time affects reminder delivery timing
+
+#### "Getting duplicate reminders"  
+- **Should Not Happen**: Each reminder type is sent only once
+- **Report Issue**: Contact admin if experiencing duplicates
+- **Database Check**: Admin can verify `sent_reminders` table
+
+#### "No overdue reminders for returned items"
+- **By Design**: Reminders automatically stop when items are marked as returned
+- **Return Process**: Ensure equipment was properly returned through the bot
+- **Status Check**: Admin can verify reservation return status
 
 ## Setup Instructions
 
@@ -310,11 +432,12 @@ cargo sqlx prepare
 cargo test
 
 # Run specific test categories
-cargo test --test time_tests      # Time conversion tests
-cargo test --test domain_tests    # Domain logic tests
-cargo test --test transfer_tests  # Transfer state machine tests  
-cargo test --test job_tests       # Job processing tests
-cargo test --test e2e_happy_path  # End-to-end workflow tests
+cargo test --test time_tests        # Time conversion tests
+cargo test --test domain_tests      # Domain logic tests
+cargo test --test transfer_tests    # Transfer state machine tests  
+cargo test --test job_tests         # Job processing tests
+cargo test --test reminder_tests    # Notification system tests
+cargo test --test e2e_happy_path    # End-to-end workflow tests
 
 # Run with output
 cargo test -- --nocapture
@@ -358,13 +481,14 @@ cargo fmt && cargo clippy && cargo test
 
 The bot uses SQLite with the following main tables:
 
-- `guilds` - Server configuration
+- `guilds` - Server configuration and notification preferences
 - `equipment` - Equipment items
 - `reservations` - Reservation records
 - `tags` - Equipment categorization
 - `locations` - Lending/return locations
 - `equipment_logs` - Audit trail
 - `jobs` - Background job queue
+- `sent_reminders` - Notification delivery tracking
 - `managed_messages` - Discord message tracking
 
 ## Backup and Maintenance
