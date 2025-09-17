@@ -1849,9 +1849,44 @@ impl Handler {
             }
         };
 
-        // Update reservation with conflict detection
+        // Get reservation details for quota validation
+        let reservation_details = sqlx::query!(
+            "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation_user_id = match reservation_details {
+            Some(res) => res.user_id,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Get guild context for quota validation
+        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id_i64 = guild_id.get() as i64;
+        
+        // Get user roles for quota validation
+        let user_roles = if let Some(member) = &interaction.member {
+            member.roles.iter().map(|r| r.get() as i64).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        // Update reservation with conflict detection and quota validation
         match self.update_reservation_with_conflict_check(
+            guild_id_i64,
             reservation_id,
+            reservation_user_id,
+            &user_roles,
             start_utc,
             end_utc,
             if location.is_empty() { None } else { Some(location) },
@@ -2241,11 +2276,30 @@ impl Handler {
 
     async fn update_reservation_with_conflict_check(
         &self,
+        guild_id: i64,
         reservation_id: i64,
+        user_id: i64,
+        user_roles: &[i64],
         start_time: chrono::DateTime<chrono::Utc>,
         end_time: chrono::DateTime<chrono::Utc>,
         location: Option<String>,
     ) -> Result<(), String> {
+        // Check quota limits for the updated reservation
+        let quota_result = self.quota_validator.validate_reservation_quota(
+            guild_id,
+            user_id,
+            user_roles,
+            start_time,
+            end_time,
+            Some(reservation_id), // Exclude current reservation from quota checks
+        ).await.map_err(|e| format!("Quota validation error: {}", e))?;
+
+        if !quota_result.is_success() {
+            if let Some(error_msg) = quota_result.error_message() {
+                return Err(error_msg);
+            }
+        }
+
         // Start transaction for conflict detection
         let mut tx = self.db.begin().await.map_err(|e| format!("Database error: {}", e))?;
 
@@ -2737,9 +2791,8 @@ impl Handler {
                 Ok(reservation_id) => {
                     // Success - refresh equipment display
                     if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
-                            let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
-                            let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
-                        }
+                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
                     }
 
                     let start_jst = crate::time::utc_to_jst_string(start);
@@ -3666,6 +3719,38 @@ impl Handler {
             }
         };
 
+        // Get reservation details for quota validation
+        let reservation_details = sqlx::query!(
+            "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation_user_id = match reservation_details {
+            Some(res) => res.user_id,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Get guild context for quota validation
+        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id_i64 = guild_id.get() as i64;
+        
+        // Get user roles for quota validation
+        let user_roles = if let Some(member) = &interaction.member {
+            member.roles.iter().map(|r| r.get() as i64).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         // Get current location
         let current_location = sqlx::query_scalar!(
             "SELECT location FROM reservations WHERE id = ?",
@@ -3675,21 +3760,21 @@ impl Handler {
         .await?
         .flatten();
 
-        // Update reservation with conflict detection
+        // Update reservation with conflict detection and quota validation
         match self.update_reservation_with_conflict_check(
+            guild_id_i64,
             reservation_id,
+            reservation_user_id,
+            &user_roles,
             start_utc,
             end_utc,
             current_location,
         ).await {
             Ok(_) => {
                 // Success - refresh equipment display
-                if let Some(guild_id) = interaction.guild_id {
-                    let guild_id_i64 = guild_id.get() as i64;
-                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
-                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
-                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
-                    }
+                if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                    let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                    let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
                 }
 
                 let start_jst = crate::time::utc_to_jst_string(start_utc);
@@ -3766,24 +3851,56 @@ impl Handler {
             }
         };
 
+        // Get reservation details for quota validation
+        let reservation_details = sqlx::query!(
+            "SELECT user_id, equipment_id FROM reservations WHERE id = ?",
+            reservation_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let reservation_user_id = match reservation_details {
+            Some(res) => res.user_id,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Reservation not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Get guild context for quota validation
+        let guild_id = interaction.guild_id.ok_or("Missing guild context")?;
+        let guild_id_i64 = guild_id.get() as i64;
+        
+        // Get user roles for quota validation
+        let user_roles = if let Some(member) = &interaction.member {
+            member.roles.iter().map(|r| r.get() as i64).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         let start_utc = Self::naive_datetime_to_utc(current.start_time);
         let end_utc = Self::naive_datetime_to_utc(current.end_time);
 
-        // Update reservation location
+        // Update reservation location (no quota validation needed for location-only changes)
         match self.update_reservation_with_conflict_check(
+            guild_id_i64,
             reservation_id,
+            reservation_user_id,
+            &user_roles,
             start_utc,
             end_utc,
             location_opt.clone(),
         ).await {
             Ok(_) => {
                 // Success - refresh equipment display
-                if let Some(guild_id) = interaction.guild_id {
-                    let guild_id_i64 = guild_id.get() as i64;
-                    if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
-                        let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
-                        let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
-                    }
+                if let Ok(channel_id) = self.get_reservation_channel_id(guild_id_i64).await {
+                    let renderer = crate::equipment::EquipmentRenderer::new(self.db.clone());
+                    let _ = renderer.reconcile_equipment_display(ctx, guild_id_i64, channel_id).await;
                 }
 
                 let location_text = location_opt.as_deref().unwrap_or("Not specified");
