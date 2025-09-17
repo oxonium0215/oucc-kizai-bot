@@ -101,7 +101,7 @@ impl EquipmentRenderer {
     pub async fn get_ordered_equipment(&self, guild_id: i64) -> Result<Vec<(Equipment, Option<Tag>)>> {
         // Get all equipment for the guild
         let equipment_rows = sqlx::query(
-            "SELECT id, guild_id, tag_id, name, status, current_location, 
+            "SELECT id, guild_id, tag_id, class_id, name, status, current_location, 
                     unavailable_reason, default_return_location, message_id, 
                     created_at, updated_at
              FROM equipment 
@@ -120,6 +120,7 @@ impl EquipmentRenderer {
                 id: row.get("id"),
                 guild_id: row.get("guild_id"),
                 tag_id: row.get("tag_id"),
+                class_id: row.get("class_id"), // NEW: include class_id field
                 name: row.get("name"),
                 status: row.get("status"),
                 current_location: row.get("current_location"),
