@@ -6,13 +6,15 @@ A comprehensive Discord bot for managing equipment reservations and lending in t
 
 - **Setup Command**: `/setup` to configure the bot in any channel
 - **Interactive Reservations**: Visual reservation system with modal forms and real-time conflict detection
+- **Managed Reservation Channels**: Fully automated equipment display with user message auto-deletion
+- **Minimal API Updates**: Intelligent message editing minimizes Discord API usage and preserves message history  
 - **Time Zone Support**: All times displayed in JST (UTC+9) with automatic UTC conversion for storage
 - **Equipment Organization**: Tag-based equipment categorization with custom sort orders
 - **Permission Management**: User-level reservation management with admin override capabilities
 - **Audit Logging**: Complete equipment operation history in equipment_logs table
 - **Live Embed Updates**: Equipment availability refreshes automatically after reservation changes
 - **Background Jobs**: Automated reminders and notifications (future features)
-- **Self-Healing**: Automatic message synchronization on restart
+- **Self-Healing**: Automatic message synchronization and repair on restart
 
 ## Setup Instructions
 
@@ -308,13 +310,37 @@ cp bot.db bot_backup_$(date +%Y%m%d_%H%M%S).db
 sqlite3 bot.db ".backup backup.db"
 ```
 
-### Message Synchronization
+### Message Synchronization and Channel Management
 
-The bot automatically synchronizes its managed messages on startup. If messages get out of sync:
+The bot maintains **fully managed reservation channels** with the following behavior:
 
-1. Restart the bot - it will detect and fix inconsistencies
-2. Use the "Overall Management" interface to refresh equipment displays
+**Managed-Only Channels:**
+- User messages are automatically deleted to keep channels clean and organized
+- Only bot-generated equipment embeds and management interfaces are preserved
+- Users can interact through buttons and modals - no typing required in reservation channels
+
+**Intelligent Message Updates:**
+- The bot uses minimal editing to update existing messages rather than recreating them
+- Only creates, edits, or deletes messages when structurally necessary
+- Preserves message history and minimizes Discord API usage
+- Maintains stable message ordering through database-tracked sort orders
+
+**Self-Healing on Startup:**
+The bot automatically synchronizes its managed messages on startup and detects:
+- Missing header or equipment messages
+- Messages with incorrect content or ordering  
+- Orphaned messages not tracked in the database
+- Duplicate or conflicting message states
+
+If messages get out of sync:
+1. Restart the bot - it will detect and fix inconsistencies automatically
+2. Use the "🔄 Refresh Display" button in the Overall Management interface
 3. Check logs for any permission or API rate limit issues
+
+**Performance Optimizations:**
+- Edit plan computation minimizes Discord API calls (typically 0-2 API calls per refresh)
+- Database indexes optimize message lookup and sorting
+- Bulk operations are avoided in favor of targeted updates
 
 ### Troubleshooting
 

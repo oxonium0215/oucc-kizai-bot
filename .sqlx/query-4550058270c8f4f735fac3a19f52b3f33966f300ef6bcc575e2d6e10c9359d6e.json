@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reservations (equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at)\n             VALUES (?, ?, ?, ?, ?, 'Confirmed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "4550058270c8f4f735fac3a19f52b3f33966f300ef6bcc575e2d6e10c9359d6e"
+}

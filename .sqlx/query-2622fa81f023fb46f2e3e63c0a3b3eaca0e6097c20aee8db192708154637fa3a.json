@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)\n             VALUES (?, ?, 'Edited', ?, 'Confirmed', 'Confirmed', ?, CURRENT_TIMESTAMP)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "2622fa81f023fb46f2e3e63c0a3b3eaca0e6097c20aee8db192708154637fa3a"
+}

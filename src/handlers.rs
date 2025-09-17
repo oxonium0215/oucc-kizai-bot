@@ -28,6 +28,13 @@ impl EventHandler for Handler {
         if let Err(e) = self.register_commands(&ctx).await {
             error!("Failed to register commands: {}", e);
         }
+
+        // Self-healing: reconcile all configured reservation channels
+        info!("Starting self-healing reconciliation for all guilds");
+        if let Err(e) = self.reconcile_all_guilds(&ctx).await {
+            error!("Failed to reconcile all guilds on startup: {}", e);
+        }
+        info!("Self-healing reconciliation completed");
     }
 
     async fn guild_create(&self, _ctx: Context, guild: Guild, _is_new: Option<bool>) {
@@ -93,6 +100,48 @@ impl EventHandler for Handler {
 }
 
 impl Handler {
+    /// Self-healing: reconcile equipment displays for all configured guilds
+    async fn reconcile_all_guilds(&self, ctx: &Context) -> Result<()> {
+        let guilds = sqlx::query!(
+            "SELECT id, reservation_channel_id FROM guilds WHERE reservation_channel_id IS NOT NULL"
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        for guild in guilds {
+            let guild_id = guild.id;
+            let channel_id = guild.reservation_channel_id.unwrap();
+            
+            info!("Reconciling equipment display for guild {} in channel {}", guild_id, channel_id);
+            
+            let renderer = EquipmentRenderer::new(self.db.clone());
+            if let Err(e) = renderer.reconcile_equipment_display(ctx, guild_id, channel_id).await {
+                error!(
+                    "Failed to reconcile equipment display for guild {} channel {}: {}",
+                    guild_id, channel_id, e
+                );
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Get the reservation channel ID for a guild
+    async fn get_reservation_channel_id(&self, guild_id: i64) -> Result<i64> {
+        let channel_id: Option<i64> = sqlx::query_scalar(
+            "SELECT reservation_channel_id FROM guilds WHERE id = ?"
+        )
+        .bind(guild_id)
+        .fetch_optional(&self.db)
+        .await?
+        .flatten();
+
+        match channel_id {
+            Some(id) => Ok(id),
+            None => Err(anyhow::anyhow!("No reservation channel configured for guild {}", guild_id))
+        }
+    }
+
     async fn register_commands(&self, ctx: &Context) -> Result<()> {
         let commands = vec![SetupCommand::register()];
 
@@ -160,9 +209,13 @@ impl Handler {
                 self.handle_refresh_display(ctx, interaction).await?
             }
             _ => {
-                // Check for dynamic reservation and equipment IDs
-                if interaction.data.custom_id.starts_with("eq_reserve:") {
+                // Check for dynamic reservation and equipment IDs (support both old and new format)
+                if interaction.data.custom_id.starts_with("eq_reserve:") || interaction.data.custom_id.starts_with("reserve_") {
                     self.handle_equipment_reserve(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("change_") {
+                    self.handle_equipment_change(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("return_") {
+                    self.handle_equipment_return(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("res_edit:") {
                     self.handle_reservation_edit(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("res_cancel:") {
@@ -672,8 +725,10 @@ impl Handler {
         ctx: &Context,
         interaction: &ComponentInteraction,
     ) -> Result<()> {
+        // Support both old and new button formats
         let equipment_id_str = interaction.data.custom_id
             .strip_prefix("eq_reserve:")
+            .or_else(|| interaction.data.custom_id.strip_prefix("reserve_"))
             .unwrap_or("");
             
         let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
@@ -739,6 +794,58 @@ impl Handler {
         ]);
 
         let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_equipment_change(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let equipment_id_str = interaction.data.custom_id
+            .strip_prefix("change_")
+            .unwrap_or("");
+            
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!("Invalid equipment ID in change button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // For now, just respond with a placeholder message
+        // TODO: Implement equipment check/change functionality in future PR
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🔄 Equipment check/change functionality coming soon!")
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_equipment_return(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let equipment_id_str = interaction.data.custom_id
+            .strip_prefix("return_")
+            .unwrap_or("");
+            
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!("Invalid equipment ID in return button: {}", interaction.data.custom_id);
+            return Ok(());
+        }
+
+        // For now, just respond with a placeholder message
+        // TODO: Implement equipment return functionality in future PR
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("↩️ Equipment return functionality coming soon!")
+                .ephemeral(true),
+        );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
@@ -1463,16 +1570,5 @@ impl Handler {
         tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
         Ok(())
-    }
-
-    async fn get_reservation_channel_id(&self, guild_id: i64) -> Result<i64, sqlx::Error> {
-        let channel_id = sqlx::query_scalar!(
-            "SELECT reservation_channel_id FROM guilds WHERE id = ?",
-            guild_id
-        )
-        .fetch_one(&self.db)
-        .await?;
-
-        Ok(channel_id.unwrap_or(0))
     }
 }
