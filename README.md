@@ -5,12 +5,13 @@ A comprehensive Discord bot for managing equipment reservations and lending in t
 ## Features
 
 - **Setup Command**: `/setup` to configure the bot in any channel
-- **Reservation Management**: Visual reservation system with interactive embeds
-- **Time Zone Support**: All times displayed in JST (UTC+9)
-- **Equipment Organization**: Tag-based equipment categorization
-- **Notification System**: DM-first notifications with channel fallback
-- **Admin Management**: Comprehensive equipment and user management
-- **Background Jobs**: Automated reminders and notifications
+- **Interactive Reservations**: Visual reservation system with modal forms and real-time conflict detection
+- **Time Zone Support**: All times displayed in JST (UTC+9) with automatic UTC conversion for storage
+- **Equipment Organization**: Tag-based equipment categorization with custom sort orders
+- **Permission Management**: User-level reservation management with admin override capabilities
+- **Audit Logging**: Complete equipment operation history in equipment_logs table
+- **Live Embed Updates**: Equipment availability refreshes automatically after reservation changes
+- **Background Jobs**: Automated reminders and notifications (future features)
 - **Self-Healing**: Automatic message synchronization on restart
 
 ## Setup Instructions
@@ -133,10 +134,46 @@ LOG_LEVEL=info                       # Default: info
 
 ### User Operations
 
-- **New Reservation**: Click equipment embed buttons to create reservations
-- **Return Equipment**: Mark equipment as returned with location
-- **Transfer Ownership**: Transfer reservations to other users
-- **Check Status**: View all your current reservations
+#### Making Reservations
+
+1. **Reserve Equipment**: Click the "📅 Reserve" button on any available equipment embed
+   - Fill in start time in JST format: `YYYY-MM-DD HH:MM` (e.g., `2024-01-15 14:00`)
+   - Fill in end time in JST format: `YYYY-MM-DD HH:MM` (e.g., `2024-01-15 16:00`)
+   - Optionally specify return location (defaults to equipment's default location)
+   - Maximum reservation length: 60 days
+
+2. **Edit Reservations**: Click the "✏️ Edit" button on your active reservations
+   - Modify start/end times or return location
+   - Changes are subject to conflict detection with other reservations
+
+3. **Cancel Reservations**: Click the "❌ Cancel" button on your reservations
+   - Cancellations are immediate and free up the equipment for others
+
+#### Time Format & Validation
+
+- **Input Format**: `YYYY-MM-DD HH:MM` (24-hour format in JST)
+- **Examples**: 
+  - `2024-01-15 09:00` (9:00 AM on January 15, 2024)
+  - `2024-12-25 13:30` (1:30 PM on December 25, 2024)
+- **Restrictions**:
+  - Start time must be in the future
+  - End time must be after start time
+  - Maximum 60 days from current time
+  - Cannot overlap with existing confirmed reservations
+
+#### Conflict Detection
+
+The bot automatically prevents overlapping reservations:
+- Real-time conflict checking when creating/editing reservations
+- Displays conflicting reservation details if overlap detected
+- Database-level transactions ensure atomic conflict resolution
+
+#### Admin Features
+
+Administrators can:
+- Cancel any user's reservation using admin-only cancel buttons
+- Access Overall Management panel for equipment/location/tag management
+- View detailed equipment logs with full reservation history
 
 ## Development
 
