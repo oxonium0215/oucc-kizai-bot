@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, message_id FROM managed_messages \n             WHERE guild_id = ? AND channel_id = ? AND message_type = 'Guide'\n             ORDER BY id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "message_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "8836b7c25d645042b7e306bb31893c2e3744613aa4e17024d0cc8b7796a45255"
+}
