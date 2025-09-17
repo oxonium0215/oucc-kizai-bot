@@ -43,6 +43,9 @@ impl JobWorker {
     async fn process_jobs(&self) -> Result<()> {
         let now = Utc::now();
 
+        // Process scheduled transfers first
+        self.process_scheduled_transfers().await?;
+
         // Get pending jobs that are due
         let jobs: Vec<Job> = sqlx::query_as::<_, Job>(
             "SELECT * FROM jobs WHERE status = 'Pending' AND scheduled_for <= ? ORDER BY scheduled_for LIMIT 10"
@@ -58,6 +61,149 @@ impl JobWorker {
             }
         }
 
+        Ok(())
+    }
+
+    /// Process scheduled transfers that are due for execution
+    async fn process_scheduled_transfers(&self) -> Result<()> {
+        let now = Utc::now();
+
+        // Get pending transfer requests that are due for execution
+        let transfers = sqlx::query_as!(
+            crate::models::TransferRequest,
+            "SELECT * FROM transfer_requests 
+             WHERE status = 'Pending' AND execute_at_utc IS NOT NULL AND execute_at_utc <= ?
+             ORDER BY execute_at_utc LIMIT 10",
+            now
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        for transfer in transfers {
+            if let Err(e) = self.execute_scheduled_transfer(&transfer).await {
+                error!("Failed to execute scheduled transfer {}: {}", transfer.id, e);
+                // Mark transfer as failed but don't stop processing others
+                let _ = self.mark_transfer_failed(&transfer).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute a scheduled transfer
+    async fn execute_scheduled_transfer(&self, transfer: &crate::models::TransferRequest) -> Result<()> {
+        info!("Executing scheduled transfer {}", transfer.id);
+
+        let mut tx = self.db.begin().await?;
+
+        // Re-validate the transfer request and reservation
+        let reservation = sqlx::query!(
+            "SELECT r.id, r.equipment_id, r.user_id, r.start_time, r.end_time, r.status, r.returned_at,
+                    e.name as equipment_name
+             FROM reservations r
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ? AND r.status = 'Confirmed'",
+            transfer.reservation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let reservation = match reservation {
+            Some(res) => res,
+            None => {
+                // Reservation no longer exists or was cancelled
+                warn!("Reservation {} for transfer {} no longer exists", transfer.reservation_id, transfer.id);
+                self.mark_transfer_expired(transfer).await?;
+                return Ok(());
+            }
+        };
+
+        // Check if reservation is already returned
+        if reservation.returned_at.is_some() {
+            warn!("Reservation {} for transfer {} has already been returned", transfer.reservation_id, transfer.id);
+            self.mark_transfer_expired(transfer).await?;
+            return Ok(());
+        }
+
+        // Check if reservation has ended
+        let now = chrono::Utc::now();
+        if reservation.end_time <= now {
+            warn!("Reservation {} for transfer {} has already ended", transfer.reservation_id, transfer.id);
+            self.mark_transfer_expired(transfer).await?;
+            return Ok(());
+        }
+
+        // Execute the transfer
+        // Update reservation owner
+        sqlx::query!(
+            "UPDATE reservations SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            transfer.to_user_id,
+            transfer.reservation_id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Log the transfer
+        let log_note = format!(
+            "Scheduled transfer executed: from <@{}> to <@{}> by <@{}> - Reservation ID: {}{}",
+            transfer.from_user_id,
+            transfer.to_user_id,
+            transfer.requested_by_user_id,
+            transfer.reservation_id,
+            if let Some(note) = &transfer.note { format!(" - Note: {}", note) } else { String::new() }
+        );
+
+        sqlx::query!(
+            "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+             VALUES (?, ?, 'Transferred', NULL, 'Confirmed', 'Confirmed', ?, CURRENT_TIMESTAMP)",
+            reservation.equipment_id,
+            transfer.requested_by_user_id,
+            log_note
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Mark transfer as completed
+        sqlx::query!(
+            "UPDATE transfer_requests SET status = 'Accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            transfer.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        info!("Successfully executed scheduled transfer {}", transfer.id);
+
+        // TODO: Send DM notifications to old and new owners (best-effort)
+        // This would use the notification infrastructure
+
+        Ok(())
+    }
+
+    /// Mark a transfer as failed due to execution errors
+    async fn mark_transfer_failed(&self, transfer: &crate::models::TransferRequest) -> Result<()> {
+        sqlx::query!(
+            "UPDATE transfer_requests SET status = 'Expired', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            transfer.id
+        )
+        .execute(&self.db)
+        .await?;
+
+        warn!("Marked transfer {} as failed/expired due to execution error", transfer.id);
+        Ok(())
+    }
+
+    /// Mark a transfer as expired due to invalid conditions
+    async fn mark_transfer_expired(&self, transfer: &crate::models::TransferRequest) -> Result<()> {
+        sqlx::query!(
+            "UPDATE transfer_requests SET status = 'Expired', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            transfer.id
+        )
+        .execute(&self.db)
+        .await?;
+
+        info!("Marked transfer {} as expired", transfer.id);
         Ok(())
     }
 
