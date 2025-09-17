@@ -535,6 +535,162 @@ The Overall Management panel provides a comprehensive dashboard for equipment ad
 - **Rate Limiting**: Respects Discord API limits with proper debouncing
 - **JST Time Display**: All times shown in Japan Standard Time for user convenience
 
+## Waitlist & Auto-Offers
+
+The bot includes a comprehensive waitlist system that automatically manages equipment availability and notifies users when their desired time slots become available.
+
+### How It Works
+
+#### Joining the Waitlist
+
+When a user tries to reserve equipment but encounters a conflict:
+
+1. **Automatic Detection**: The system detects reservation conflicts or holds
+2. **Join Waitlist Option**: A "Join Waitlist" button appears automatically
+3. **FIFO Queue**: Users are added to a fair first-in-first-out queue
+4. **Time Window Tracking**: System remembers the exact desired time range
+
+#### Automatic Offers
+
+When equipment becomes available (due to cancellations, early returns, or maintenance completion):
+
+1. **Next-in-Line Selection**: The system finds the next user in the FIFO queue
+2. **Time Window Matching**: Only offers if the available window fully covers the user's desired time
+3. **Exclusive Hold**: A temporary hold prevents others from booking during the offer period
+4. **Instant Notification**: User receives a DM with Accept/Decline buttons
+
+### User Experience
+
+#### Waitlist Entry
+
+```
+✅ Successfully Joined Waitlist!
+
+📋 Entry ID: 42
+📅 Desired Time: 2024/01/15 14:00 to 16:00 (JST)
+
+🔔 You'll be notified via DM when this time slot becomes available. 
+Your position in the queue is based on when you joined the waitlist.
+```
+
+#### Offer Notification (DM)
+
+```
+🎉 Equipment Available!
+
+Equipment: Professional Camera
+Available Time: 2024/01/15 14:00 to 16:00 (JST)
+Offer Expires: 2024/01/15 13:45 (JST)
+
+You have been waitlisted for this equipment and it's now available! 
+Click the buttons below to accept or decline this offer.
+
+[Accept Offer] [Decline Offer]
+```
+
+#### Successful Acceptance
+
+```
+✅ Offer Accepted Successfully!
+
+🆔 Reservation ID: 156
+
+Your reservation has been created and you have been removed from the waitlist.
+```
+
+### Features
+
+#### Fair Queuing
+- **FIFO Ordering**: First-joined gets first offer
+- **No Cutting**: Queue position cannot be changed (except by admin)
+- **Automatic Advancement**: Queue progresses when offers are declined or expire
+
+#### Smart Matching
+- **Exact Coverage**: Only offers time windows that fully cover the requested period
+- **Conflict Prevention**: Temporary holds prevent double-booking during offers
+- **Expiration**: Offers automatically expire (default: 15 minutes)
+
+#### User Management
+- **View Entries**: Users can see all their active waitlist entries
+- **Leave Anytime**: Cancel waitlist entries at any time
+- **Multiple Entries**: Can waitlist for different equipment or time windows
+
+#### Admin Controls
+- **Cancel Entries**: Admins can cancel any waitlist entry
+- **Manual Offers**: Admins can create offers out of order (planned)
+- **Queue Visibility**: View all waitlist entries for equipment management
+
+### Technical Details
+
+#### Hold System
+When an offer is created, the system places a temporary exclusive hold on the time window:
+- **Duration**: Configurable per guild (default: 15 minutes)
+- **Enforcement**: Prevents all other users from reserving the held time
+- **Exception**: The user with the offer can still accept (bypasses their own hold)
+- **Auto-Release**: Hold automatically releases when offer expires or is declined
+
+#### Trigger Events
+Waitlist processing is automatically triggered when:
+- **Reservation Cancellation**: Cancelled reservations immediately trigger waitlist processing
+- **Early Returns**: Equipment returned before scheduled end time
+- **Maintenance Completion**: When maintenance windows end or are cancelled
+
+#### Notification Delivery
+- **Primary**: Direct messages with interactive Accept/Decline buttons
+- **Fallback**: Channel mentions if DMs are disabled or fail
+- **Logging**: All notification attempts are logged for troubleshooting
+
+### Troubleshooting
+
+#### "No offers despite cancellations"
+- **Partial Availability**: The available window must fully cover your desired time
+- **Queue Position**: Others may be ahead of you in the queue
+- **Time Constraints**: The available window might be too small
+
+#### "Offer expired before I could respond"
+- **Default Timeout**: Offers expire after 15 minutes by default
+- **Admin Setting**: Your server admin can adjust the timeout period
+- **Queue Advancement**: When offers expire, the next person gets notified
+
+#### "Not receiving offer notifications"
+1. **Check DM Settings**: Ensure you accept DMs from server members
+2. **Check Channel**: Look for mentions in the reservation channel
+3. **Verify Entry**: Use waitlist view to confirm your entry exists
+4. **Contact Admin**: Admin can check notification delivery logs
+
+#### "Joined waitlist but still see conflicts"
+- **By Design**: Waitlist doesn't remove the underlying conflict
+- **Time Flexibility**: Consider adjusting your desired time window
+- **Multiple Entries**: You can create separate entries for different time ranges
+
+### Configuration
+
+#### Guild Settings
+Admins can configure waitlist behavior during setup:
+- **Offer Hold Duration**: How long offers remain valid (default: 15 minutes)
+- **DM Fallback**: Whether to use channel mentions when DMs fail
+
+#### Database Tables
+- **waitlist_entries**: User requests for equipment/time windows
+- **waitlist_offers**: System-generated offers with expiration tracking
+- **Constraints**: Prevents duplicate entries for same user/equipment/window
+
+### Examples
+
+#### Basic Workflow
+1. User tries to reserve camera for 2-4 PM → Conflict detected
+2. User clicks "Join Waitlist" → Entry created with ID #42
+3. Another user cancels reservation for 2-4 PM → System detects availability
+4. System creates offer for user #42 → DM sent with Accept/Decline buttons
+5. User clicks "Accept Offer" → Reservation created, waitlist entry removed
+
+#### Multiple Users
+1. Users A, B, C all waitlist camera for 2-4 PM (in that order)
+2. Camera becomes available for 2-4 PM
+3. User A gets first offer → 15 minutes to respond
+4. If User A declines → User B gets next offer automatically
+5. If User B accepts → Reservation created, Users A & C remain waitlisted
+
 ## Development
 
 ### Project Structure
