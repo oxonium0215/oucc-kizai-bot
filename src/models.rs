@@ -129,6 +129,25 @@ pub struct SentReminder {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MaintenanceWindow {
+    pub id: i64,
+    pub equipment_id: i64,
+    pub start_utc: DateTime<Utc>,
+    pub end_utc: DateTime<Utc>,
+    pub reason: Option<String>,
+    pub created_by_user_id: i64,
+    pub created_at_utc: DateTime<Utc>,
+    pub canceled_at_utc: Option<DateTime<Utc>>,
+    pub canceled_by_user_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MaintenanceSettings {
+    pub guild_id: i64,
+    pub admin_reminder_minutes: Option<i64>,
+}
+
 // Enums for better type safety
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EquipmentStatus {

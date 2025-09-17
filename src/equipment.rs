@@ -222,6 +222,23 @@ impl EquipmentRenderer {
             embed = embed.field("Availability", "Available for reservation", false);
         }
 
+        // Add maintenance information
+        let current_maintenance = self.get_current_or_upcoming_maintenance(equipment.id).await?;
+        if let Some(maintenance) = current_maintenance {
+            let start_jst = time::utc_to_jst_string(maintenance.start_utc);
+            let end_jst = time::utc_to_jst_string(maintenance.end_utc);
+            let reason = maintenance.reason.unwrap_or_else(|| "Equipment maintenance".to_string());
+            
+            let now = Utc::now();
+            if maintenance.start_utc <= now && now < maintenance.end_utc {
+                // Currently in maintenance
+                embed = embed.field("🔧 Current Maintenance", format!("**{}**\nUntil: {}", reason, end_jst), false);
+            } else {
+                // Upcoming maintenance
+                embed = embed.field("🔧 Scheduled Maintenance", format!("**{}**\nFrom: {} to {}", reason, start_jst, end_jst), false);
+            }
+        }
+
         Ok(embed)
     }
 
@@ -328,6 +345,33 @@ impl EquipmentRenderer {
                         .style(ButtonStyle::Danger)
                 );
             }
+        }
+
+        // Admin-only maintenance buttons
+        // Note: Permission checking will be done in handlers
+        let has_maintenance = self.has_current_or_upcoming_maintenance(equipment.id).await.unwrap_or(false);
+        
+        if has_maintenance {
+            // Show edit/cancel buttons for existing maintenance
+            if let Ok(Some(maintenance)) = self.get_current_or_upcoming_maintenance(equipment.id).await {
+                buttons.push(
+                    CreateButton::new(format!("maint_edit_{}", maintenance.id))
+                        .label("🔧 Edit Maintenance")
+                        .style(ButtonStyle::Secondary)
+                );
+                buttons.push(
+                    CreateButton::new(format!("maint_cancel_{}", maintenance.id))
+                        .label("❌ Cancel Maintenance")
+                        .style(ButtonStyle::Danger)
+                );
+            }
+        } else {
+            // Show create maintenance button
+            buttons.push(
+                CreateButton::new(format!("maint_new_{}", equipment.id))
+                    .label("🔧 Maintenance")
+                    .style(ButtonStyle::Secondary)
+            );
         }
 
         if buttons.is_empty() {
@@ -554,4 +598,65 @@ impl EquipmentRenderer {
 
         Ok(())
     }
+
+    /// Check if equipment has current or upcoming maintenance
+    async fn has_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<bool> {
+        let now_utc = Utc::now().naive_utc();
+
+        let row = sqlx::query(
+            "SELECT COUNT(*) as count FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND end_utc > ?"
+        )
+        .bind(equipment_id)
+        .bind(now_utc)
+        .fetch_one(&self.db)
+        .await?;
+
+        let count: i64 = row.get("count");
+        Ok(count > 0)
+    }
+
+    /// Get current or next upcoming maintenance window for equipment
+    async fn get_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<Option<crate::models::MaintenanceWindow>> {
+        let now_utc = Utc::now().naive_utc();
+
+        let maintenance_row = sqlx::query(
+            "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, 
+                    COALESCE(created_at_utc, CURRENT_TIMESTAMP) as created_at_utc, 
+                    canceled_at_utc, canceled_by_user_id
+             FROM maintenance_windows 
+             WHERE equipment_id = ? AND canceled_at_utc IS NULL
+             AND end_utc > ?
+             ORDER BY start_utc ASC
+             LIMIT 1"
+        )
+        .bind(equipment_id)
+        .bind(now_utc)
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(row) = maintenance_row {
+            use crate::models::MaintenanceWindow;
+            let maintenance = MaintenanceWindow {
+                id: row.get("id"),
+                equipment_id: row.get("equipment_id"),
+                start_utc: to_utc_datetime(row.get("start_utc")),
+                end_utc: to_utc_datetime(row.get("end_utc")),
+                reason: row.get("reason"),
+                created_by_user_id: row.get("created_by_user_id"),
+                created_at_utc: to_utc_datetime(row.get("created_at_utc")),
+                canceled_at_utc: row.get::<Option<NaiveDateTime>, _>("canceled_at_utc").map(to_utc_datetime),
+                canceled_by_user_id: row.get("canceled_by_user_id"),
+            };
+            Ok(Some(maintenance))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// Helper function to convert NaiveDateTime to DateTime<Utc>
+fn to_utc_datetime(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
 }
