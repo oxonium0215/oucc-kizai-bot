@@ -101,7 +101,7 @@ impl EquipmentRenderer {
     pub async fn get_ordered_equipment(&self, guild_id: i64) -> Result<Vec<(Equipment, Option<Tag>)>> {
         // Get all equipment for the guild
         let equipment_rows = sqlx::query(
-            "SELECT id, guild_id, tag_id, class_id, name, status, current_location, 
+            "SELECT id, guild_id, tag_id, name, status, current_location, 
                     unavailable_reason, default_return_location, message_id, 
                     created_at, updated_at
              FROM equipment 
@@ -120,7 +120,6 @@ impl EquipmentRenderer {
                 id: row.get("id"),
                 guild_id: row.get("guild_id"),
                 tag_id: row.get("tag_id"),
-                class_id: row.get("class_id"), // NEW: include class_id field
                 name: row.get("name"),
                 status: row.get("status"),
                 current_location: row.get("current_location"),
@@ -192,18 +191,6 @@ impl EquipmentRenderer {
             embed = embed.field("Category", &tag.name, true);
         }
 
-        // Add equipment class information
-        if let Some(class_id) = equipment.class_id {
-            if let Some(class) = self.get_equipment_class(class_id).await? {
-                let class_display = if let Some(emoji) = &class.emoji {
-                    format!("{} {}", emoji, class.name)
-                } else {
-                    class.name.clone()
-                };
-                embed = embed.field("Class", class_display, true);
-            }
-        }
-
         if let Some(location) = &equipment.current_location {
             embed = embed.field("Current Location", location, true);
         } else if let Some(default_location) = &equipment.default_return_location {
@@ -233,23 +220,6 @@ impl EquipmentRenderer {
             }
         } else {
             embed = embed.field("Availability", "Available for reservation", false);
-        }
-
-        // Add maintenance information
-        let current_maintenance = self.get_current_or_upcoming_maintenance(equipment.id).await?;
-        if let Some(maintenance) = current_maintenance {
-            let start_jst = time::utc_to_jst_string(maintenance.start_utc);
-            let end_jst = time::utc_to_jst_string(maintenance.end_utc);
-            let reason = maintenance.reason.unwrap_or_else(|| "Equipment maintenance".to_string());
-            
-            let now = Utc::now();
-            if maintenance.start_utc <= now && now < maintenance.end_utc {
-                // Currently in maintenance
-                embed = embed.field("🔧 Current Maintenance", format!("**{}**\nUntil: {}", reason, end_jst), false);
-            } else {
-                // Upcoming maintenance
-                embed = embed.field("🔧 Scheduled Maintenance", format!("**{}**\nFrom: {} to {}", reason, start_jst, end_jst), false);
-            }
         }
 
         Ok(embed)
@@ -358,33 +328,6 @@ impl EquipmentRenderer {
                         .style(ButtonStyle::Danger)
                 );
             }
-        }
-
-        // Admin-only maintenance buttons
-        // Note: Permission checking will be done in handlers
-        let has_maintenance = self.has_current_or_upcoming_maintenance(equipment.id).await.unwrap_or(false);
-        
-        if has_maintenance {
-            // Show edit/cancel buttons for existing maintenance
-            if let Ok(Some(maintenance)) = self.get_current_or_upcoming_maintenance(equipment.id).await {
-                buttons.push(
-                    CreateButton::new(format!("maint_edit_{}", maintenance.id))
-                        .label("🔧 Edit Maintenance")
-                        .style(ButtonStyle::Secondary)
-                );
-                buttons.push(
-                    CreateButton::new(format!("maint_cancel_{}", maintenance.id))
-                        .label("❌ Cancel Maintenance")
-                        .style(ButtonStyle::Danger)
-                );
-            }
-        } else {
-            // Show create maintenance button
-            buttons.push(
-                CreateButton::new(format!("maint_new_{}", equipment.id))
-                    .label("🔧 Maintenance")
-                    .style(ButtonStyle::Secondary)
-            );
         }
 
         if buttons.is_empty() {
@@ -611,92 +554,4 @@ impl EquipmentRenderer {
 
         Ok(())
     }
-
-    /// Check if equipment has current or upcoming maintenance
-    async fn has_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<bool> {
-        let now_utc = Utc::now().naive_utc();
-
-        let row = sqlx::query(
-            "SELECT COUNT(*) as count FROM maintenance_windows 
-             WHERE equipment_id = ? AND canceled_at_utc IS NULL
-             AND end_utc > ?"
-        )
-        .bind(equipment_id)
-        .bind(now_utc)
-        .fetch_one(&self.db)
-        .await?;
-
-        let count: i64 = row.get("count");
-        Ok(count > 0)
-    }
-
-    /// Get current or next upcoming maintenance window for equipment
-    async fn get_current_or_upcoming_maintenance(&self, equipment_id: i64) -> Result<Option<crate::models::MaintenanceWindow>> {
-        let now_utc = Utc::now().naive_utc();
-
-        let maintenance_row = sqlx::query(
-            "SELECT id, equipment_id, start_utc, end_utc, reason, created_by_user_id, 
-                    COALESCE(created_at_utc, CURRENT_TIMESTAMP) as created_at_utc, 
-                    canceled_at_utc, canceled_by_user_id
-             FROM maintenance_windows 
-             WHERE equipment_id = ? AND canceled_at_utc IS NULL
-             AND end_utc > ?
-             ORDER BY start_utc ASC
-             LIMIT 1"
-        )
-        .bind(equipment_id)
-        .bind(now_utc)
-        .fetch_optional(&self.db)
-        .await?;
-
-        if let Some(row) = maintenance_row {
-            use crate::models::MaintenanceWindow;
-            let maintenance = MaintenanceWindow {
-                id: row.get("id"),
-                equipment_id: row.get("equipment_id"),
-                start_utc: to_utc_datetime(row.get("start_utc")),
-                end_utc: to_utc_datetime(row.get("end_utc")),
-                reason: row.get("reason"),
-                created_by_user_id: row.get("created_by_user_id"),
-                created_at_utc: to_utc_datetime(row.get("created_at_utc")),
-                canceled_at_utc: row.get::<Option<NaiveDateTime>, _>("canceled_at_utc").map(to_utc_datetime),
-                canceled_by_user_id: row.get("canceled_by_user_id"),
-            };
-            Ok(Some(maintenance))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Get equipment class by ID
-    async fn get_equipment_class(&self, class_id: i64) -> Result<Option<crate::models::EquipmentClass>> {
-        let class_row = sqlx::query!(
-            "SELECT id, guild_id, name, emoji, description, created_at_utc 
-             FROM equipment_classes 
-             WHERE id = ?",
-            class_id
-        )
-        .fetch_optional(&self.db)
-        .await?;
-
-        if let Some(row) = class_row {
-            use crate::models::EquipmentClass;
-            let class = EquipmentClass {
-                id: row.id,
-                guild_id: row.guild_id,
-                name: row.name,
-                emoji: row.emoji,
-                description: row.description,
-                created_at_utc: to_utc_datetime(row.created_at_utc),
-            };
-            Ok(Some(class))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-// Helper function to convert NaiveDateTime to DateTime<Utc>
-fn to_utc_datetime(naive: chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
 }

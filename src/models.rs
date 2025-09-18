@@ -31,7 +31,6 @@ pub struct Equipment {
     pub id: i64,
     pub guild_id: i64,
     pub tag_id: Option<i64>,
-    pub class_id: Option<i64>, // NEW: FK to equipment_classes
     pub name: String,
     pub status: String, // Available, Loaned, Unavailable
     pub current_location: Option<String>,
@@ -128,99 +127,6 @@ pub struct SentReminder {
     pub sent_at_utc: DateTime<Utc>,
     pub delivery_method: String, // DM, CHANNEL, FAILED
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct MaintenanceWindow {
-    pub id: i64,
-    pub equipment_id: i64,
-    pub start_utc: DateTime<Utc>,
-    pub end_utc: DateTime<Utc>,
-    pub reason: Option<String>,
-    pub created_by_user_id: i64,
-    pub created_at_utc: DateTime<Utc>,
-    pub canceled_at_utc: Option<DateTime<Utc>>,
-    pub canceled_by_user_id: Option<i64>,
-}
-
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct MaintenanceSettings {
-    pub guild_id: i64,
-    pub admin_reminder_minutes: Option<i64>,
-}
-
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct QuotaSettings {
-    pub guild_id: i64,
-    pub max_active_count: Option<i64>,
-    pub max_overlap_count: Option<i64>,
-    pub max_hours_7d: Option<i64>,
-    pub max_hours_30d: Option<i64>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct QuotaRoleOverride {
-    pub guild_id: i64,
-    pub role_id: i64,
-    pub max_active_count: Option<i64>,
-    pub max_overlap_count: Option<i64>,
-    pub max_hours_7d: Option<i64>,
-    pub max_hours_30d: Option<i64>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct QuotaOverrideAudit {
-    pub id: i64,
-    pub guild_id: i64,
-    pub reservation_id: Option<i64>,
-    pub user_id: i64,
-    pub acted_by_user_id: i64,
-    pub reason: Option<String>,
-    pub created_at_utc: DateTime<Utc>,
-}
-
-/// Equipment class for organizing equipment with specific limits
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct EquipmentClass {
-    pub id: i64,
-    pub guild_id: i64,
-    pub name: String,
-    pub emoji: Option<String>,
-    pub description: Option<String>,
-    pub created_at_utc: DateTime<Utc>,
-}
-
-/// Class-specific quota overrides
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct QuotaClassOverride {
-    pub guild_id: i64,
-    pub class_id: i64,
-    pub max_active_count: Option<i64>,
-    pub max_overlap_count: Option<i64>,
-    pub max_hours_7d: Option<i64>,
-    pub max_hours_30d: Option<i64>,
-    pub max_duration_hours: Option<i64>,
-    pub min_lead_time_minutes: Option<i64>,
-    pub max_lead_time_days: Option<i64>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// Combined quota limits after applying role and class overrides
-#[derive(Debug, Clone, Default)]
-pub struct EffectiveQuotaLimits {
-    pub max_active_count: Option<i64>,
-    pub max_overlap_count: Option<i64>,
-    pub max_hours_7d: Option<i64>,
-    pub max_hours_30d: Option<i64>,
-    // Class-specific additional constraints
-    pub max_duration_hours: Option<i64>,
-    pub min_lead_time_minutes: Option<i64>,
-    pub max_lead_time_days: Option<i64>,
 }
 
 // Enums for better type safety
