@@ -154,27 +154,51 @@ impl EventHandler for Handler {
             return;
         }
 
-        // Check if this is a reservation channel
-        if let Some(guild_id) = msg.guild_id {
-            let guild_id_i64 = guild_id.get() as i64;
-            let channel_id_i64 = msg.channel_id.get() as i64;
+        // Ignore DMs and non-guild messages
+        let guild_id = match msg.guild_id {
+            Some(id) => id,
+            None => return,
+        };
 
-            let is_reservation_channel: Option<i64> = sqlx::query_scalar(
-                "SELECT reservation_channel_id FROM guilds WHERE id = ? AND reservation_channel_id = ?"
-            )
-            .bind(guild_id_i64)
-            .bind(channel_id_i64)
-            .fetch_optional(&self.db)
-            .await
-            .unwrap_or(None);
+        // Check if this message is in a configured reservation channel
+        let guild_id_i64 = guild_id.get() as i64;
+        let channel_id_i64 = msg.channel_id.get() as i64;
 
-            if is_reservation_channel.is_some() {
-                if let Err(e) = msg.delete(&ctx.http).await {
-                    error!(
-                        "Failed to delete user message in reservation channel: {}",
-                        e
-                    );
-                }
+        // Use more efficient query that directly checks if this channel is a reservation channel
+        let reservation_channel_id: Option<i64> = match sqlx::query_scalar(
+            "SELECT reservation_channel_id FROM guilds WHERE id = ? AND reservation_channel_id = ?"
+        )
+        .bind(guild_id_i64)
+        .bind(channel_id_i64)
+        .fetch_optional(&self.db)
+        .await
+        {
+            Ok(result) => result.flatten(),
+            Err(e) => {
+                error!(
+                    "Database error checking reservation channel for guild {}: {}",
+                    guild_id_i64, e
+                );
+                return;
+            }
+        };
+
+        if reservation_channel_id.is_some() {
+            // Check if bot has MANAGE_MESSAGES permission in this channel
+            if let Err(e) = self.check_manage_messages_permission(&ctx, msg.channel_id, guild_id).await {
+                tracing::warn!(
+                    "Bot lacks MANAGE_MESSAGES permission in reservation channel {} (guild {}): {}",
+                    channel_id_i64, guild_id_i64, e
+                );
+                return;
+            }
+
+            // Attempt to delete the user message
+            if let Err(e) = msg.delete(&ctx.http).await {
+                error!(
+                    "Failed to delete user message {} in reservation channel {} (guild {}): {}",
+                    msg.id, channel_id_i64, guild_id_i64, e
+                );
             }
         }
     }
@@ -229,6 +253,31 @@ impl Handler {
                 guild_id
             )),
         }
+    }
+
+    /// Check if the bot has MANAGE_MESSAGES permission in the specified channel
+    async fn check_manage_messages_permission(
+        &self,
+        ctx: &Context,
+        channel_id: ChannelId,
+        guild_id: GuildId,
+    ) -> Result<()> {
+        let current_user_id = ctx.cache.current_user().id;
+        let member = guild_id.member(ctx, current_user_id).await?;
+        let channel = channel_id.to_channel(&ctx.http).await?;
+
+        if let Some(guild_channel) = channel.guild() {
+            // Use the guild to check permissions with proper overwrites
+            let guild = guild_id.to_guild_cached(&ctx.cache)
+                .ok_or_else(|| anyhow::anyhow!("Guild not in cache"))?;
+            let permissions = guild.user_permissions_in(&guild_channel, &member);
+            
+            if !permissions.contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES) {
+                return Err(anyhow::anyhow!("Missing MANAGE_MESSAGES permission"));
+            }
+        }
+
+        Ok(())
     }
 
     async fn register_commands(&self, ctx: &Context) -> Result<()> {
