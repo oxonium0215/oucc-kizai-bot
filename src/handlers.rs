@@ -1729,15 +1729,9 @@ impl Handler {
         .await?;
 
         if !conflicts.is_empty() {
-            let conflict = &conflicts[0];
-            let conflict_start_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
-            let conflict_end_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
-
             let embed = CreateEmbed::new()
                 .title("⚠️ Reservation Conflict Detected")
-                .description(format!("**Equipment:** {}\n\n❌ **Conflict:** Your requested time overlaps with an existing reservation by <@{}> from {} to {}.\n\nPlease go back and choose different times.", equipment_name, conflict.user_id, conflict_start_jst, conflict_end_jst))
+                .description("This time slot is already reserved. Please select another time.")
                 .color(Colour::RED);
 
             let buttons = CreateActionRow::Buttons(vec![
@@ -2452,15 +2446,7 @@ impl Handler {
         .map_err(|e| format!("Database error: {}", e))?;
 
         if !conflicts.is_empty() {
-            let conflict = &conflicts[0];
-            let start_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
-            let end_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
-            return Err(format!(
-                "Reservation conflicts with existing booking by <@{}> from {} to {}",
-                conflict.user_id, start_jst, end_jst
-            ));
+            return Err("This time slot is already reserved. Please select another time.".to_string());
         }
 
         // Create reservation
@@ -2542,15 +2528,7 @@ impl Handler {
         .map_err(|e| format!("Database error: {}", e))?;
 
         if !conflicts.is_empty() {
-            let conflict = &conflicts[0];
-            let start_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
-            let end_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
-            return Err(format!(
-                "Updated reservation would conflict with existing booking by <@{}> from {} to {}",
-                conflict.user_id, start_jst, end_jst
-            ));
+            return Err("This time slot is already reserved. Please select another time.".to_string());
         }
 
         // Update reservation
@@ -3580,15 +3558,9 @@ impl Handler {
         .await?;
 
         if !conflicts.is_empty() {
-            let conflict = &conflicts[0];
-            let conflict_start_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.start_time));
-            let conflict_end_jst =
-                crate::time::utc_to_jst_string(Self::naive_datetime_to_utc(conflict.end_time));
-
             let embed = CreateEmbed::new()
                 .title("⚠️ Reservation Conflict Detected")
-                .description(format!("**Equipment:** {}\n\n❌ **Conflict:** Your requested time overlaps with an existing reservation by <@{}> from {} to {}.\n\nPlease go back and choose different times.", equipment_name, conflict.user_id, conflict_start_jst, conflict_end_jst))
+                .description("This time slot is already reserved. Please select another time.")
                 .color(Colour::RED);
 
             let buttons = CreateActionRow::Buttons(vec![

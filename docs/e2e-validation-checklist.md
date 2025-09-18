@@ -189,12 +189,12 @@ Each validation item includes:
 - ✅ **Validation Steps**:
   - Create overlapping reservation attempts
   - Test edge cases (same start/end times)
-  - Verify conflict messaging is clear
+  - Verify conflict messaging is clear and standardized
   - Test multiple concurrent reservation attempts
 
 - 📋 **Expected Behavior**:
-  - Clear conflict messages with specific details
-  - Suggests alternative time slots when possible
+  - Standardized conflict message: "This time slot is already reserved. Please select another time."
+  - Consistent messaging across modal pre-check and final submission flows
   - Prevents double-booking completely
   - Graceful handling of race conditions
 
