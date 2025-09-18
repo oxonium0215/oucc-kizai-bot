@@ -1,15 +1,15 @@
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use serde_json::Value;
+use serenity::model::prelude::*;
 use sqlx::SqlitePool;
 use std::time::Duration as StdDuration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
-use serde_json::Value;
-use serenity::model::prelude::*;
 
-use crate::models::{Job, ReminderKind, DeliveryMethod};
-use crate::traits::DiscordApi;
+use crate::models::{DeliveryMethod, Job, ReminderKind};
 use crate::time::utc_to_jst_string;
+use crate::traits::DiscordApi;
 
 // Helper function to convert NaiveDateTime to DateTime<Utc>
 fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
@@ -23,12 +23,15 @@ pub struct JobWorker {
 
 impl JobWorker {
     pub fn new(db: SqlitePool) -> Self {
-        Self { db, discord_api: None }
+        Self {
+            db,
+            discord_api: None,
+        }
     }
 
     pub fn with_discord_api(db: SqlitePool, discord_api: Box<dyn DiscordApi>) -> Self {
-        Self { 
-            db, 
+        Self {
+            db,
             discord_api: Some(discord_api),
         }
     }
@@ -105,7 +108,10 @@ impl JobWorker {
 
         for transfer in transfers {
             if let Err(e) = self.execute_scheduled_transfer(&transfer).await {
-                error!("Failed to execute scheduled transfer {}: {}", transfer.id, e);
+                error!(
+                    "Failed to execute scheduled transfer {}: {}",
+                    transfer.id, e
+                );
                 // Mark transfer as failed but don't stop processing others
                 let _ = self.mark_transfer_failed(&transfer).await;
             }
@@ -115,7 +121,10 @@ impl JobWorker {
     }
 
     /// Execute a scheduled transfer
-    async fn execute_scheduled_transfer(&self, transfer: &crate::models::TransferRequest) -> Result<()> {
+    async fn execute_scheduled_transfer(
+        &self,
+        transfer: &crate::models::TransferRequest,
+    ) -> Result<()> {
         info!("Executing scheduled transfer {}", transfer.id);
 
         let mut tx = self.db.begin().await?;
@@ -136,7 +145,10 @@ impl JobWorker {
             Some(res) => res,
             None => {
                 // Reservation no longer exists or was cancelled
-                warn!("Reservation {} for transfer {} no longer exists", transfer.reservation_id, transfer.id);
+                warn!(
+                    "Reservation {} for transfer {} no longer exists",
+                    transfer.reservation_id, transfer.id
+                );
                 self.mark_transfer_expired(transfer).await?;
                 return Ok(());
             }
@@ -144,7 +156,10 @@ impl JobWorker {
 
         // Check if reservation is already returned
         if reservation.returned_at.is_some() {
-            warn!("Reservation {} for transfer {} has already been returned", transfer.reservation_id, transfer.id);
+            warn!(
+                "Reservation {} for transfer {} has already been returned",
+                transfer.reservation_id, transfer.id
+            );
             self.mark_transfer_expired(transfer).await?;
             return Ok(());
         }
@@ -153,7 +168,10 @@ impl JobWorker {
         let now = chrono::Utc::now();
         let reservation_end_time = naive_to_utc(reservation.end_time);
         if reservation_end_time <= now {
-            warn!("Reservation {} for transfer {} has already ended", transfer.reservation_id, transfer.id);
+            warn!(
+                "Reservation {} for transfer {} has already ended",
+                transfer.reservation_id, transfer.id
+            );
             self.mark_transfer_expired(transfer).await?;
             return Ok(());
         }
@@ -175,7 +193,11 @@ impl JobWorker {
             transfer.to_user_id,
             transfer.requested_by_user_id,
             transfer.reservation_id,
-            if let Some(note) = &transfer.note { format!(" - Note: {}", note) } else { String::new() }
+            if let Some(note) = &transfer.note {
+                format!(" - Note: {}", note)
+            } else {
+                String::new()
+            }
         );
 
         sqlx::query!(
@@ -215,7 +237,10 @@ impl JobWorker {
         .execute(&self.db)
         .await?;
 
-        warn!("Marked transfer {} as failed/expired due to execution error", transfer.id);
+        warn!(
+            "Marked transfer {} as failed/expired due to execution error",
+            transfer.id
+        );
         Ok(())
     }
 
@@ -303,7 +328,11 @@ impl JobWorker {
         .await?;
 
         if existing_reminder.is_some() {
-            info!("Reminder already sent for reservation {} kind {}", reservation_id, reminder_kind.to_db_string());
+            info!(
+                "Reminder already sent for reservation {} kind {}",
+                reservation_id,
+                reminder_kind.to_db_string()
+            );
             return Ok(());
         }
 
@@ -318,14 +347,20 @@ impl JobWorker {
         let reservation_row = match reservation_row {
             Some(r) => r,
             None => {
-                info!("Reservation {} not found or not confirmed, skipping reminder", reservation_id);
+                info!(
+                    "Reservation {} not found or not confirmed, skipping reminder",
+                    reservation_id
+                );
                 return Ok(());
             }
         };
 
         // Skip if already returned
         if reservation_row.returned_at.is_some() {
-            info!("Reservation {} already returned, skipping reminder", reservation_id);
+            info!(
+                "Reservation {} already returned, skipping reminder",
+                reservation_id
+            );
             return Ok(());
         }
 
@@ -338,22 +373,19 @@ impl JobWorker {
         .await?;
 
         // Get guild configuration for fallback behavior
-        let guild_row = sqlx::query!(
-            "SELECT * FROM guilds WHERE id = ?",
-            equipment_row.guild_id
-        )
-        .fetch_one(&self.db)
-        .await?;
+        let guild_row = sqlx::query!("SELECT * FROM guilds WHERE id = ?", equipment_row.guild_id)
+            .fetch_one(&self.db)
+            .await?;
 
         // Format reminder message - get individual fields safely
         let equipment_name: String = equipment_row.name;
         let start_time_naive: chrono::NaiveDateTime = reservation_row.start_time;
         let end_time_naive: chrono::NaiveDateTime = reservation_row.end_time;
-        
+
         // Convert to UTC DateTime
         let start_time_utc = DateTime::<Utc>::from_naive_utc_and_offset(start_time_naive, Utc);
         let end_time_utc = DateTime::<Utc>::from_naive_utc_and_offset(end_time_naive, Utc);
-        
+
         let message = match &reminder_kind {
             ReminderKind::PreStart => format!(
                 "📅 リマインダー: 「{}」の貸出開始まで15分です。\n開始時刻: {}",
@@ -386,7 +418,8 @@ impl JobWorker {
                 &message,
                 guild_row.reservation_channel_id,
                 guild_row.dm_fallback_channel_enabled.unwrap_or(true),
-            ).await?
+            )
+            .await?
         } else {
             DeliveryMethod::Failed
         };
@@ -395,7 +428,7 @@ impl JobWorker {
         let reminder_kind_str = reminder_kind.to_db_string();
         let now = Utc::now();
         let delivery_method_str = String::from(delivery_method);
-        
+
         sqlx::query!(
             "INSERT INTO sent_reminders (reservation_id, kind, sent_at_utc, delivery_method)
              VALUES (?, ?, ?, ?)",
@@ -407,8 +440,12 @@ impl JobWorker {
         .execute(&self.db)
         .await?;
 
-        info!("Sent {} reminder for reservation {} via {:?}", 
-              reminder_kind.to_db_string(), reservation_id, delivery_method);
+        info!(
+            "Sent {} reminder for reservation {} via {:?}",
+            reminder_kind.to_db_string(),
+            reservation_id,
+            delivery_method
+        );
 
         Ok(())
     }
@@ -440,8 +477,11 @@ impl JobWorker {
             if let Some(channel_id) = reservation_channel_id {
                 let channel_message = format!("<@{}> {}", user_id, message);
                 let channel_id = ChannelId::new(channel_id as u64);
-                
-                match discord_api.send_channel_message(channel_id, &channel_message).await {
+
+                match discord_api
+                    .send_channel_message(channel_id, &channel_message)
+                    .await
+                {
                     Ok(_) => return Ok(DeliveryMethod::Channel),
                     Err(e) => {
                         warn!("Error sending channel fallback message: {}", e);
@@ -504,12 +544,9 @@ impl JobWorker {
         guild_id: i64,
     ) -> Result<()> {
         // Get guild notification preferences
-        let guild_row = sqlx::query!(
-            "SELECT * FROM guilds WHERE id = ?",
-            guild_id
-        )
-        .fetch_one(db)
-        .await?;
+        let guild_row = sqlx::query!("SELECT * FROM guilds WHERE id = ?", guild_id)
+            .fetch_one(db)
+            .await?;
 
         let pre_start_minutes = guild_row.pre_start_minutes.unwrap_or(15);
         let pre_end_minutes = guild_row.pre_end_minutes.unwrap_or(15);
@@ -518,35 +555,21 @@ impl JobWorker {
         if pre_start_minutes > 0 {
             let pre_start_time = reservation_start - Duration::minutes(pre_start_minutes);
             if pre_start_time > Utc::now() {
-                Self::schedule_reminder_job(
-                    db,
-                    reservation_id,
-                    "pre_start",
-                    pre_start_time,
-                ).await?;
+                Self::schedule_reminder_job(db, reservation_id, "pre_start", pre_start_time)
+                    .await?;
             }
         }
 
         // Schedule start reminder
         if reservation_start > Utc::now() {
-            Self::schedule_reminder_job(
-                db,
-                reservation_id,
-                "start",
-                reservation_start,
-            ).await?;
+            Self::schedule_reminder_job(db, reservation_id, "start", reservation_start).await?;
         }
 
         // Schedule pre-end reminder
         if pre_end_minutes > 0 {
             let pre_end_time = reservation_end - Duration::minutes(pre_end_minutes);
             if pre_end_time > Utc::now() {
-                Self::schedule_reminder_job(
-                    db,
-                    reservation_id,
-                    "pre_end",
-                    pre_end_time,
-                ).await?;
+                Self::schedule_reminder_job(db, reservation_id, "pre_end", pre_end_time).await?;
             }
         }
 
@@ -560,12 +583,9 @@ impl JobWorker {
         reservation_end: DateTime<Utc>,
         guild_id: i64,
     ) -> Result<()> {
-        let guild_row = sqlx::query!(
-            "SELECT * FROM guilds WHERE id = ?",
-            guild_id
-        )
-        .fetch_one(db)
-        .await?;
+        let guild_row = sqlx::query!("SELECT * FROM guilds WHERE id = ?", guild_id)
+            .fetch_one(db)
+            .await?;
 
         let repeat_hours = guild_row.overdue_repeat_hours.unwrap_or(12);
         let max_count = guild_row.overdue_max_count.unwrap_or(3);
@@ -579,12 +599,7 @@ impl JobWorker {
                     format!("return_delay_{}", i)
                 };
 
-                Self::schedule_reminder_job(
-                    db,
-                    reservation_id,
-                    &job_type,
-                    overdue_time,
-                ).await?;
+                Self::schedule_reminder_job(db, reservation_id, &job_type, overdue_time).await?;
             }
         }
 
@@ -612,17 +627,16 @@ impl JobWorker {
         .execute(db)
         .await?;
 
-        info!("Scheduled {} reminder for reservation {} at {}", 
-              reminder_type, reservation_id, scheduled_for);
+        info!(
+            "Scheduled {} reminder for reservation {} at {}",
+            reminder_type, reservation_id, scheduled_for
+        );
 
         Ok(())
     }
 
     /// Cancel all future reminders for a reservation (when returned)
-    pub async fn cancel_reservation_reminders(
-        db: &SqlitePool,
-        reservation_id: i64,
-    ) -> Result<()> {
+    pub async fn cancel_reservation_reminders(db: &SqlitePool, reservation_id: i64) -> Result<()> {
         // Cancel pending reminder jobs
         sqlx::query!(
             "UPDATE jobs 
@@ -635,7 +649,10 @@ impl JobWorker {
         .execute(db)
         .await?;
 
-        info!("Cancelled future reminders for reservation {}", reservation_id);
+        info!(
+            "Cancelled future reminders for reservation {}",
+            reservation_id
+        );
         Ok(())
     }
 }

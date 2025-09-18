@@ -1,21 +1,21 @@
 use anyhow::Result;
 use serenity::all::{
-    ButtonStyle, ChannelId, CommandInteraction, ComponentInteraction, CreateActionRow,
-    CreateButton, CreateCommand, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, Permissions, CreateSelectMenu, CreateSelectMenuKind,
-    CreateSelectMenuOption, ComponentInteractionDataKind,
+    ButtonStyle, ChannelId, CommandInteraction, ComponentInteraction, ComponentInteractionDataKind,
+    CreateActionRow, CreateButton, CreateCommand, CreateEmbed, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, Permissions,
 };
 use serenity::model::colour::Colour;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use sqlx::SqlitePool;
-use tracing::{error, info};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
-use crate::utils;
 use crate::equipment::EquipmentRenderer;
+use crate::utils;
 
 // In-memory storage for setup wizard state
 #[derive(Debug, Clone)]
@@ -139,23 +139,28 @@ impl SetupCommand {
         // Store wizard state
         {
             let mut states = SETUP_STATES.lock().await;
-            states.insert(user_id, SetupWizardState {
-                guild_id,
-                channel_id,
+            states.insert(
                 user_id,
-                selected_roles: Vec::new(),
-                // Default notification preferences
-                dm_fallback_enabled: true,
-                pre_start_minutes: 15,
-                pre_end_minutes: 15,
-                overdue_repeat_hours: 12,
-                overdue_max_count: 3,
-            });
+                SetupWizardState {
+                    guild_id,
+                    channel_id,
+                    user_id,
+                    selected_roles: Vec::new(),
+                    // Default notification preferences
+                    dm_fallback_enabled: true,
+                    pre_start_minutes: 15,
+                    pre_end_minutes: 15,
+                    overdue_repeat_hours: 12,
+                    overdue_max_count: 3,
+                },
+            );
         }
 
         // Get guild info to check if there are roles
         let has_roles = if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
-            let non_everyone_roles_count = guild.roles.values()
+            let non_everyone_roles_count = guild
+                .roles
+                .values()
                 .filter(|role| !role.name.starts_with('@'))
                 .filter(|role| role.id != guild_id.everyone_role())
                 .count();
@@ -262,12 +267,16 @@ impl SetupCommand {
         } else {
             // Create equipment embeds using the renderer
             let renderer = EquipmentRenderer::new(db.clone());
-            
+
             // Clean up any duplicate guide messages first
-            renderer.cleanup_duplicate_guides(ctx, guild_id, channel_id.get() as i64).await?;
-            
+            renderer
+                .cleanup_duplicate_guides(ctx, guild_id, channel_id.get() as i64)
+                .await?;
+
             // Render equipment display
-            renderer.reconcile_equipment_display(ctx, guild_id, channel_id.get() as i64).await?;
+            renderer
+                .reconcile_equipment_display(ctx, guild_id, channel_id.get() as i64)
+                .await?;
         }
 
         Ok(())
@@ -301,11 +310,14 @@ impl SetupCommand {
 
         // Acknowledge the selection but don't update the message yet
         // The actual selection values are in interaction.data.values for select menus
-        let selected_role_ids: Vec<RoleId> = if let serenity::all::ComponentInteractionDataKind::RoleSelect { values } = &interaction.data.kind {
-            values.clone()
-        } else {
-            Vec::new()
-        };
+        let selected_role_ids: Vec<RoleId> =
+            if let serenity::all::ComponentInteractionDataKind::RoleSelect { values } =
+                &interaction.data.kind
+            {
+                values.clone()
+            } else {
+                Vec::new()
+            };
 
         // Update state with selected roles
         {
@@ -318,7 +330,7 @@ impl SetupCommand {
         // Acknowledge the selection with a simple response
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
-                .content("✅ Roles selected. Click **Next** to continue.")
+                .content("✅ Roles selected. Click **Next** to continue."),
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
@@ -356,7 +368,8 @@ impl SetupCommand {
         };
 
         // Show notification preferences step
-        Self::show_notification_preferences_step(ctx, interaction, db, &state, &selected_roles).await
+        Self::show_notification_preferences_step(ctx, interaction, db, &state, &selected_roles)
+            .await
     }
 
     async fn show_notification_preferences_step(
@@ -394,7 +407,7 @@ impl SetupCommand {
                 false,
             )
             .field(
-                "🔔 Pre-End Reminder", 
+                "🔔 Pre-End Reminder",
                 "Notify users before their reservation ends (default: 15 minutes)",
                 false,
             )
@@ -403,7 +416,9 @@ impl SetupCommand {
                 "Repeat notifications for unreturned items (default: every 12 hours, max 3 times)",
                 false,
             )
-            .footer(serenity::all::CreateEmbedFooter::new("Current settings shown are defaults. Click buttons to adjust or Next to continue."))
+            .footer(serenity::all::CreateEmbedFooter::new(
+                "Current settings shown are defaults. Click buttons to adjust or Next to continue.",
+            ))
             .color(Colour::BLURPLE);
 
         let select_menu = CreateSelectMenu::new(
@@ -443,10 +458,7 @@ impl SetupCommand {
                 .style(ButtonStyle::Danger),
         ]);
 
-        let components = vec![
-            CreateActionRow::SelectMenu(select_menu),
-            buttons,
-        ];
+        let components = vec![CreateActionRow::SelectMenu(select_menu), buttons];
 
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
@@ -464,11 +476,12 @@ impl SetupCommand {
         _db: &SqlitePool,
     ) -> Result<()> {
         let user_id = interaction.user.id;
-        let values = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
-            values.clone()
-        } else {
-            return Ok(());
-        };
+        let values =
+            if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+                values.clone()
+            } else {
+                return Ok(());
+            };
 
         // Update notification preferences in state
         {
@@ -496,7 +509,7 @@ impl SetupCommand {
         // Acknowledge the selection
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
-                .content("✅ Notification preferences updated. Click **Next** to continue.")
+                .content("✅ Notification preferences updated. Click **Next** to continue."),
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
@@ -541,13 +554,15 @@ impl SetupCommand {
         let role_mentions = if selected_roles.is_empty() {
             "None (only Discord administrators)".to_string()
         } else {
-            selected_roles.iter()
+            selected_roles
+                .iter()
                 .map(|role_id| role_id.mention().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         };
 
-        let notification_summary = format!(
+        let notification_summary =
+            format!(
             "DM Fallback: {}\nPre-Start: {} min\nPre-End: {} min\nOverdue: Every {} hrs (max {})",
             if state.dm_fallback_enabled { "Enabled" } else { "Disabled" },
             state.pre_start_minutes,
@@ -559,10 +574,16 @@ impl SetupCommand {
         let embed = CreateEmbed::new()
             .title("🔧 Setup - Step 4: Final Confirmation")
             .description("Please review your configuration:")
-            .field("Reservation Channel", state.channel_id.mention().to_string(), false)
+            .field(
+                "Reservation Channel",
+                state.channel_id.mention().to_string(),
+                false,
+            )
             .field("Admin Roles", role_mentions, false)
             .field("Notification Settings", notification_summary, false)
-            .footer(serenity::all::CreateEmbedFooter::new("Click Complete to finish setup or Cancel to abort."))
+            .footer(serenity::all::CreateEmbedFooter::new(
+                "Click Complete to finish setup or Cancel to abort.",
+            ))
             .color(Colour::BLURPLE);
 
         let buttons = CreateActionRow::Buttons(vec![
@@ -616,7 +637,8 @@ impl SetupCommand {
         let admin_roles_json = if selected_roles.is_empty() {
             "[]".to_string()
         } else {
-            let role_ids: Vec<String> = selected_roles.iter()
+            let role_ids: Vec<String> = selected_roles
+                .iter()
                 .map(|role_id| role_id.get().to_string())
                 .collect();
             serde_json::to_string(&role_ids)?
@@ -665,8 +687,10 @@ impl SetupCommand {
         let role_summary = if selected_roles.is_empty() {
             "Only Discord administrators will have management access.".to_string()
         } else {
-            format!("Admin roles: {}", 
-                selected_roles.iter()
+            format!(
+                "Admin roles: {}",
+                selected_roles
+                    .iter()
                     .map(|role_id| role_id.mention().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -675,7 +699,11 @@ impl SetupCommand {
 
         let notification_summary = format!(
             "DM Fallback: {}, Pre-Start: {}min, Pre-End: {}min, Overdue: Every {}hrs (max {})",
-            if state.dm_fallback_enabled { "✅" } else { "❌" },
+            if state.dm_fallback_enabled {
+                "✅"
+            } else {
+                "❌"
+            },
             state.pre_start_minutes,
             state.pre_end_minutes,
             state.overdue_repeat_hours,
@@ -711,7 +739,9 @@ impl SetupCommand {
 
         info!(
             "Setup completed for guild {} in channel {} with {} admin roles",
-            guild_id_i64, channel_id_i64, selected_roles.len()
+            guild_id_i64,
+            channel_id_i64,
+            selected_roles.len()
         );
         Ok(())
     }

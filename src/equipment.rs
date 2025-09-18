@@ -1,10 +1,13 @@
 use anyhow::Result;
-use serenity::all::{ChannelId, Context, CreateEmbed, CreateMessage, CreateActionRow, CreateButton, ButtonStyle, Colour, MessageId, EditMessage};
-use sqlx::{SqlitePool, Row};
+use chrono::{NaiveDateTime, Utc};
+use serenity::all::{
+    ButtonStyle, ChannelId, Colour, Context, CreateActionRow, CreateButton, CreateEmbed,
+    CreateMessage, EditMessage, MessageId,
+};
+use sqlx::{Row, SqlitePool};
 use tracing::{error, info, warn};
-use chrono::{Utc, NaiveDateTime};
 
-use crate::models::{Equipment, Tag, Reservation, ManagedMessage};
+use crate::models::{Equipment, ManagedMessage, Reservation, Tag};
 use crate::time;
 
 /// Equipment visualization and management
@@ -16,9 +19,9 @@ pub struct EquipmentRenderer {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditAction {
     CreateHeader,
-    CreateEquipment(i64), // equipment_id
+    CreateEquipment(i64),    // equipment_id
     EditEquipment(i64, i64), // message_id, equipment_id
-    DeleteMessage(i64), // message_id
+    DeleteMessage(i64),      // message_id
 }
 
 /// Plan for reconciling managed messages
@@ -26,7 +29,7 @@ pub enum EditAction {
 pub struct EditPlan {
     pub actions: Vec<EditAction>,
     pub creates: usize,
-    pub edits: usize, 
+    pub edits: usize,
     pub deletes: usize,
 }
 
@@ -38,7 +41,7 @@ impl EquipmentRenderer {
     /// Compute minimal edit plan for reconciling managed messages
     pub fn compute_edit_plan(
         existing_messages: &[ManagedMessage],
-        equipment_list: &[(Equipment, Option<Tag>)]
+        equipment_list: &[(Equipment, Option<Tag>)],
     ) -> EditPlan {
         let mut actions = Vec::new();
         let mut creates = 0;
@@ -46,9 +49,9 @@ impl EquipmentRenderer {
         let mut deletes = 0;
 
         // Check if header exists (sort_order = 0, message_type = 'Header')
-        let has_header = existing_messages.iter().any(|msg| {
-            msg.message_type == "Header" && msg.sort_order == Some(0)
-        });
+        let has_header = existing_messages
+            .iter()
+            .any(|msg| msg.message_type == "Header" && msg.sort_order == Some(0));
 
         if !has_header {
             actions.push(EditAction::CreateHeader);
@@ -69,11 +72,11 @@ impl EquipmentRenderer {
         // Plan message updates for each position
         for (index, (equipment, _tag)) in equipment_list.iter().enumerate() {
             let _target_sort_order = index as i64 + 1; // Start from 1 (header is 0)
-            
+
             if index < existing_count {
                 // We have an existing message at this position
                 let existing = existing_equipment_messages[index];
-                
+
                 // Check if the equipment ID matches
                 if existing.equipment_id != Some(equipment.id) {
                     // Equipment changed, need to edit the message
@@ -94,11 +97,19 @@ impl EquipmentRenderer {
             deletes += 1;
         }
 
-        EditPlan { actions, creates, edits, deletes }
+        EditPlan {
+            actions,
+            creates,
+            edits,
+            deletes,
+        }
     }
 
     /// Get equipment with their tags, ordered by tag.sort_order ASC, then equipment.name ASC
-    pub async fn get_ordered_equipment(&self, guild_id: i64) -> Result<Vec<(Equipment, Option<Tag>)>> {
+    pub async fn get_ordered_equipment(
+        &self,
+        guild_id: i64,
+    ) -> Result<Vec<(Equipment, Option<Tag>)>> {
         // Get all equipment for the guild
         let equipment_rows = sqlx::query(
             "SELECT id, guild_id, tag_id, name, status, current_location, 
@@ -106,14 +117,14 @@ impl EquipmentRenderer {
                     created_at, updated_at
              FROM equipment 
              WHERE guild_id = ?
-             ORDER BY name ASC"
+             ORDER BY name ASC",
         )
         .bind(guild_id)
         .fetch_all(&self.db)
         .await?;
 
         let mut result = Vec::new();
-        
+
         // For each equipment, get its tag if it has one
         for row in equipment_rows {
             let equipment = Equipment {
@@ -132,12 +143,12 @@ impl EquipmentRenderer {
 
             let tag = if let Some(tag_id) = equipment.tag_id {
                 let tag_row = sqlx::query(
-                    "SELECT id, guild_id, name, sort_order, created_at FROM tags WHERE id = ?"
+                    "SELECT id, guild_id, name, sort_order, created_at FROM tags WHERE id = ?",
                 )
                 .bind(tag_id)
                 .fetch_optional(&self.db)
                 .await?;
-                
+
                 if let Some(tag_row) = tag_row {
                     Some(Tag {
                         id: tag_row.get("id"),
@@ -152,7 +163,7 @@ impl EquipmentRenderer {
             } else {
                 None
             };
-            
+
             result.push((equipment, tag));
         }
 
@@ -167,7 +178,11 @@ impl EquipmentRenderer {
     }
 
     /// Create an embed for a single piece of equipment
-    pub async fn create_equipment_embed(&self, equipment: &Equipment, tag: &Option<Tag>) -> Result<CreateEmbed> {
+    pub async fn create_equipment_embed(
+        &self,
+        equipment: &Equipment,
+        tag: &Option<Tag>,
+    ) -> Result<CreateEmbed> {
         let status_emoji = match equipment.status.as_str() {
             "Available" => "✅",
             "Loaned" => "🔒",
@@ -209,14 +224,22 @@ impl EquipmentRenderer {
             let start_jst = time::utc_to_jst_string(reservation.start_time);
             let end_jst = time::utc_to_jst_string(reservation.end_time);
             let user_mention = format!("<@{}>", reservation.user_id);
-            
+
             let now = Utc::now();
             if reservation.start_time <= now && now < reservation.end_time {
                 // Currently reserved
-                embed = embed.field("Currently Reserved", format!("By: {}\nUntil: {}", user_mention, end_jst), false);
+                embed = embed.field(
+                    "Currently Reserved",
+                    format!("By: {}\nUntil: {}", user_mention, end_jst),
+                    false,
+                );
             } else {
                 // Future reservation
-                embed = embed.field("Next Reservation", format!("By: {}\nFrom: {} to {}", user_mention, start_jst, end_jst), false);
+                embed = embed.field(
+                    "Next Reservation",
+                    format!("By: {}\nFrom: {} to {}", user_mention, start_jst, end_jst),
+                    false,
+                );
             }
         } else {
             embed = embed.field("Availability", "Available for reservation", false);
@@ -226,7 +249,10 @@ impl EquipmentRenderer {
     }
 
     /// Get the current or next upcoming reservation for equipment
-    async fn get_current_or_next_reservation(&self, equipment_id: i64) -> Result<Option<Reservation>> {
+    async fn get_current_or_next_reservation(
+        &self,
+        equipment_id: i64,
+    ) -> Result<Option<Reservation>> {
         // Use regular query instead of query_as! to handle type conversions manually
         let reservation_row = sqlx::query!(
             "SELECT id, equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at, returned_at, return_location
@@ -253,8 +279,12 @@ impl EquipmentRenderer {
                 end_time: to_utc_datetime(row.end_time),
                 location: row.location,
                 status: row.status,
-                created_at: to_utc_datetime(row.created_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
-                updated_at: to_utc_datetime(row.updated_at.unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc())),
+                created_at: to_utc_datetime(row.created_at.unwrap_or_else(|| {
+                    chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()
+                })),
+                updated_at: to_utc_datetime(row.updated_at.unwrap_or_else(|| {
+                    chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()
+                })),
                 returned_at: row.returned_at.map(to_utc_datetime),
                 return_location: row.return_location,
             }))
@@ -271,26 +301,25 @@ impl EquipmentRenderer {
             .description("Manage your equipment reservations and organization settings.")
             .color(Colour::BLUE);
 
-        let button = CreateActionRow::Buttons(vec![
-            CreateButton::new("overall_mgmt_open")
-                .label("📊 Overall Management")
-                .style(ButtonStyle::Primary)
-        ]);
+        let button = CreateActionRow::Buttons(vec![CreateButton::new("overall_mgmt_open")
+            .label("📊 Overall Management")
+            .style(ButtonStyle::Primary)]);
 
-        CreateMessage::new()
-            .embed(embed)
-            .components(vec![button])
+        CreateMessage::new().embed(embed).components(vec![button])
     }
 
-    pub async fn create_equipment_buttons(&self, equipment: &Equipment) -> Result<Vec<CreateActionRow>> {
+    pub async fn create_equipment_buttons(
+        &self,
+        equipment: &Equipment,
+    ) -> Result<Vec<CreateActionRow>> {
         let mut buttons = Vec::new();
-        
+
         // Always show Reserve button for available equipment
         if equipment.status == "Available" {
             buttons.push(
                 CreateButton::new(format!("reserve_{}", equipment.id))
                     .label("📅 Reserve")
-                    .style(ButtonStyle::Primary)
+                    .style(ButtonStyle::Primary),
             );
         }
 
@@ -309,7 +338,7 @@ impl EquipmentRenderer {
             buttons.push(
                 CreateButton::new(format!("change_{}", equipment.id))
                     .label("✏️ Check/Change")
-                    .style(ButtonStyle::Secondary)
+                    .style(ButtonStyle::Secondary),
             );
 
             // Transfer button for equipment with active/upcoming reservations
@@ -317,7 +346,7 @@ impl EquipmentRenderer {
             buttons.push(
                 CreateButton::new(format!("transfer_{}", equipment.id))
                     .label("🔄 Transfer")
-                    .style(ButtonStyle::Secondary)
+                    .style(ButtonStyle::Secondary),
             );
 
             // Return button for currently loaned equipment
@@ -325,7 +354,7 @@ impl EquipmentRenderer {
                 buttons.push(
                     CreateButton::new(format!("return_{}", equipment.id))
                         .label("↩️ Return")
-                        .style(ButtonStyle::Danger)
+                        .style(ButtonStyle::Danger),
                 );
             }
         }
@@ -344,7 +373,10 @@ impl EquipmentRenderer {
         guild_id: i64,
         channel_id: i64,
     ) -> Result<()> {
-        info!("Reconciling equipment display for guild {} in channel {}", guild_id, channel_id);
+        info!(
+            "Reconciling equipment display for guild {} in channel {}",
+            guild_id, channel_id
+        );
 
         let channel = ChannelId::new(channel_id as u64);
 
@@ -369,7 +401,7 @@ impl EquipmentRenderer {
             } else {
                 chrono::Utc::now()
             };
-            
+
             ManagedMessage {
                 id: row.get("id"),
                 guild_id: row.get("guild_id"),
@@ -385,7 +417,7 @@ impl EquipmentRenderer {
 
         // Compute minimal edit plan
         let edit_plan = Self::compute_edit_plan(&existing_messages, &equipment_list);
-        
+
         info!(
             "Edit plan: {} creates, {} edits, {} deletes",
             edit_plan.creates, edit_plan.edits, edit_plan.deletes
@@ -416,24 +448,31 @@ impl EquipmentRenderer {
                         }
                     }
                 }
-                
+
                 EditAction::CreateEquipment(equipment_id) => {
                     // Find the equipment and its tag
-                    if let Some((equipment, tag)) = equipment_list.iter().find(|(eq, _)| eq.id == *equipment_id) {
+                    if let Some((equipment, tag)) =
+                        equipment_list.iter().find(|(eq, _)| eq.id == *equipment_id)
+                    {
                         let embed = self.create_equipment_embed(equipment, tag).await?;
                         let buttons = self.create_equipment_buttons(equipment).await?;
-                        
+
                         let mut message_builder = CreateMessage::new().embed(embed);
                         if !buttons.is_empty() {
                             message_builder = message_builder.components(buttons);
                         }
-                        
+
                         match channel.send_message(&ctx.http, message_builder).await {
                             Ok(message) => {
                                 let message_id = message.id.get() as i64;
                                 // Calculate sort_order (equipment messages start from 1)
-                                let sort_order = equipment_list.iter().position(|(eq, _)| eq.id == *equipment_id).unwrap() as i64 + 1;
-                                
+                                let sort_order = equipment_list
+                                    .iter()
+                                    .position(|(eq, _)| eq.id == *equipment_id)
+                                    .unwrap()
+                                    as i64
+                                    + 1;
+
                                 sqlx::query(
                                     "INSERT INTO managed_messages 
                                      (guild_id, channel_id, message_id, message_type, equipment_id, sort_order)
@@ -446,30 +485,45 @@ impl EquipmentRenderer {
                                 .bind(sort_order)
                                 .execute(&self.db)
                                 .await?;
-                                
-                                info!("Created equipment embed for {} (ID: {})", equipment.name, equipment.id);
+
+                                info!(
+                                    "Created equipment embed for {} (ID: {})",
+                                    equipment.name, equipment.id
+                                );
                             }
                             Err(e) => {
-                                error!("Failed to create equipment embed for {}: {}", equipment.name, e);
+                                error!(
+                                    "Failed to create equipment embed for {}: {}",
+                                    equipment.name, e
+                                );
                             }
                         }
                     }
                 }
-                
+
                 EditAction::EditEquipment(message_id, equipment_id) => {
                     // Find the equipment and its tag
-                    if let Some((equipment, tag)) = equipment_list.iter().find(|(eq, _)| eq.id == *equipment_id) {
+                    if let Some((equipment, tag)) =
+                        equipment_list.iter().find(|(eq, _)| eq.id == *equipment_id)
+                    {
                         let embed = self.create_equipment_embed(equipment, tag).await?;
                         let buttons = self.create_equipment_buttons(equipment).await?;
-                        
+
                         let mut edit_builder = EditMessage::new().embed(embed);
                         if !buttons.is_empty() {
                             edit_builder = edit_builder.components(buttons);
                         } else {
                             edit_builder = edit_builder.components(Vec::new());
                         }
-                        
-                        match channel.edit_message(&ctx.http, MessageId::new(*message_id as u64), edit_builder).await {
+
+                        match channel
+                            .edit_message(
+                                &ctx.http,
+                                MessageId::new(*message_id as u64),
+                                edit_builder,
+                            )
+                            .await
+                        {
                             Ok(_) => {
                                 // Update the equipment_id in the database
                                 sqlx::query(
@@ -479,8 +533,11 @@ impl EquipmentRenderer {
                                 .bind(message_id)
                                 .execute(&self.db)
                                 .await?;
-                                
-                                info!("Updated equipment embed for {} (ID: {})", equipment.name, equipment.id);
+
+                                info!(
+                                    "Updated equipment embed for {} (ID: {})",
+                                    equipment.name, equipment.id
+                                );
                             }
                             Err(e) => {
                                 warn!("Failed to edit equipment message {}: {}", message_id, e);
@@ -488,20 +545,21 @@ impl EquipmentRenderer {
                         }
                     }
                 }
-                
+
                 EditAction::DeleteMessage(message_id) => {
-                    if let Err(e) = channel.delete_message(&ctx.http, MessageId::new(*message_id as u64)).await {
+                    if let Err(e) = channel
+                        .delete_message(&ctx.http, MessageId::new(*message_id as u64))
+                        .await
+                    {
                         warn!("Failed to delete message {}: {}", message_id, e);
                     }
-                    
+
                     // Remove from database
-                    sqlx::query(
-                        "DELETE FROM managed_messages WHERE message_id = ?"
-                    )
-                    .bind(message_id)
-                    .execute(&self.db)
-                    .await?;
-                    
+                    sqlx::query("DELETE FROM managed_messages WHERE message_id = ?")
+                        .bind(message_id)
+                        .execute(&self.db)
+                        .await?;
+
                     info!("Deleted message {}", message_id);
                 }
             }
@@ -527,7 +585,7 @@ impl EquipmentRenderer {
         let guide_messages: Vec<(i64, i64)> = sqlx::query_as(
             "SELECT id, message_id FROM managed_messages 
              WHERE guild_id = ? AND channel_id = ? AND message_type = 'Guide'
-             ORDER BY id ASC"
+             ORDER BY id ASC",
         )
         .bind(guild_id)
         .bind(channel_id)
@@ -536,12 +594,21 @@ impl EquipmentRenderer {
 
         // If there are multiple guide messages, delete all but the first
         if guide_messages.len() > 1 {
-            info!("Found {} guide messages, removing duplicates", guide_messages.len());
-            
+            info!(
+                "Found {} guide messages, removing duplicates",
+                guide_messages.len()
+            );
+
             for guide in guide_messages.iter().skip(1) {
                 // Delete from Discord
-                if let Err(e) = channel.delete_message(&ctx.http, MessageId::new(guide.1 as u64)).await {
-                    warn!("Failed to delete duplicate guide message {}: {}", guide.1, e);
+                if let Err(e) = channel
+                    .delete_message(&ctx.http, MessageId::new(guide.1 as u64))
+                    .await
+                {
+                    warn!(
+                        "Failed to delete duplicate guide message {}: {}",
+                        guide.1, e
+                    );
                 }
 
                 // Delete from database

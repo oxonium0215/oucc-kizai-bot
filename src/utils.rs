@@ -5,7 +5,7 @@ use serenity::prelude::*;
 
 pub async fn is_admin(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Result<bool> {
     let member = guild_id.member(ctx, user_id).await?;
-    
+
     // Check if user has administrator permission in any context
     // Since we don't have a specific channel, we use the base guild permissions
     if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
@@ -24,14 +24,14 @@ pub async fn is_admin(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Resu
 pub async fn check_bot_permissions(ctx: &Context, channel_id: ChannelId) -> Result<Vec<String>> {
     let channel = channel_id.to_channel(&ctx.http).await?;
     let current_user_id = ctx.cache.current_user().id;
-    
+
     let mut missing_permissions = Vec::new();
 
     if let Some(guild_channel) = channel.guild() {
         let guild_id = guild_channel.guild_id;
         let member = guild_id.member(ctx, current_user_id).await?;
         let permissions = guild_channel.permissions_for_user(ctx, &member)?;
-        
+
         if !permissions.contains(Permissions::SEND_MESSAGES) {
             missing_permissions.push("Send Messages".to_string());
         }
