@@ -8,13 +8,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  DATABASE_URL: sqlite:test.db
+  SQLX_OFFLINE: false
 
 jobs:
   test:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Install Rust
       uses: actions-rs/toolchain@v1
@@ -44,6 +46,11 @@ jobs:
     - name: Install SQLx CLI
       run: cargo install sqlx-cli --no-default-features --features sqlite
 
+    - name: Prepare database and run migrations
+      run: |
+        touch test.db
+        sqlx migrate run
+
     - name: Check formatting
       run: cargo fmt -- --check
 
@@ -55,18 +62,8 @@ jobs:
       env:
         DATABASE_URL: sqlite::memory:
 
-    - name: Run domain tests  
+    - name: Run domain and time tests
       run: cargo test --test time_tests --test domain_tests
-      env:
-        DATABASE_URL: sqlite:test.db
-
-    - name: Check sqlx migrations
-      run: |
-        # Create a test database
-        touch test.db
-        export DATABASE_URL=sqlite:test.db
-        sqlx migrate run
-        cargo sqlx prepare --check
       env:
         DATABASE_URL: sqlite:test.db
 

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use oucc_kizai_bot::{database, traits::*, time::*};
-use oucc_kizai_bot::models::{Guild as DbGuild, Tag, Location, Equipment, Reservation, Job, ManagedMessage};
+use oucc_kizai_bot::models::{
+    Equipment, Guild as DbGuild, Job, Location, ManagedMessage, Reservation, Tag,
+};
+use oucc_kizai_bot::{database, time::*, traits::*};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
@@ -12,11 +14,11 @@ pub async fn setup_test_db() -> Result<SqlitePool> {
     let temp_file = NamedTempFile::new()?;
     let db_path = temp_file.path().to_str().unwrap();
     let database_url = format!("sqlite:{}", db_path);
-    
+
     // Initialize database with migrations
     let pool = database::init(&database_url).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
-    
+
     Ok(pool)
 }
 
@@ -43,20 +45,20 @@ impl GuildBuilder {
             admin_roles: None,
         }
     }
-    
+
     pub fn with_reservation_channel(mut self, channel_id: i64) -> Self {
         self.reservation_channel_id = Some(channel_id);
         self
     }
-    
+
     pub fn with_admin_roles(mut self, roles: Vec<i64>) -> Self {
         self.admin_roles = Some(serde_json::to_string(&roles).unwrap());
         self
     }
-    
+
     pub async fn build(self, db: &SqlitePool) -> Result<DbGuild> {
         let now = Utc::now();
-        
+
         sqlx::query!(
             "INSERT INTO guilds (id, reservation_channel_id, admin_roles, created_at, updated_at) 
              VALUES (?, ?, ?, ?, ?)",
@@ -68,7 +70,7 @@ impl GuildBuilder {
         )
         .execute(db)
         .await?;
-        
+
         Ok(DbGuild {
             id: self.id,
             reservation_channel_id: self.reservation_channel_id,
@@ -99,15 +101,15 @@ impl TagBuilder {
             sort_order: 0,
         }
     }
-    
+
     pub fn with_sort_order(mut self, order: i64) -> Self {
         self.sort_order = order;
         self
     }
-    
+
     pub async fn build(self, db: &SqlitePool) -> Result<Tag> {
         let now = Utc::now();
-        
+
         let result = sqlx::query!(
             "INSERT INTO tags (guild_id, name, sort_order, created_at) VALUES (?, ?, ?, ?) RETURNING id",
             self.guild_id,
@@ -117,7 +119,7 @@ impl TagBuilder {
         )
         .fetch_one(db)
         .await?;
-        
+
         Ok(Tag {
             id: result.id,
             guild_id: self.guild_id,
@@ -141,10 +143,10 @@ impl LocationBuilder {
             name: name.to_string(),
         }
     }
-    
+
     pub async fn build(self, db: &SqlitePool) -> Result<Location> {
         let now = Utc::now();
-        
+
         let result = sqlx::query!(
             "INSERT INTO locations (guild_id, name, created_at) VALUES (?, ?, ?) RETURNING id",
             self.guild_id,
@@ -153,7 +155,7 @@ impl LocationBuilder {
         )
         .fetch_one(db)
         .await?;
-        
+
         Ok(Location {
             id: result.id,
             guild_id: self.guild_id,
@@ -188,30 +190,30 @@ impl EquipmentBuilder {
             message_id: None,
         }
     }
-    
+
     pub fn with_tag(mut self, tag_id: i64) -> Self {
         self.tag_id = Some(tag_id);
         self
     }
-    
+
     pub fn with_status(mut self, status: &str) -> Self {
         self.status = status.to_string();
         self
     }
-    
+
     pub fn with_location(mut self, location: &str) -> Self {
         self.current_location = Some(location.to_string());
         self
     }
-    
+
     pub fn with_default_return_location(mut self, location: &str) -> Self {
         self.default_return_location = Some(location.to_string());
         self
     }
-    
+
     pub async fn build(self, db: &SqlitePool) -> Result<Equipment> {
         let now = Utc::now();
-        
+
         let result = sqlx::query!(
             "INSERT INTO equipment (guild_id, tag_id, name, status, current_location, unavailable_reason, 
                                   default_return_location, message_id, created_at, updated_at) 
@@ -229,7 +231,7 @@ impl EquipmentBuilder {
         )
         .fetch_one(db)
         .await?;
-        
+
         Ok(Equipment {
             id: result.id,
             guild_id: self.guild_id,
@@ -257,7 +259,12 @@ pub struct ReservationBuilder {
 }
 
 impl ReservationBuilder {
-    pub fn new(equipment_id: i64, user_id: i64, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Self {
+    pub fn new(
+        equipment_id: i64,
+        user_id: i64,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+    ) -> Self {
         Self {
             equipment_id,
             user_id,
@@ -267,20 +274,20 @@ impl ReservationBuilder {
             status: "Confirmed".to_string(),
         }
     }
-    
+
     pub fn with_location(mut self, location: &str) -> Self {
         self.location = Some(location.to_string());
         self
     }
-    
+
     pub fn with_status(mut self, status: &str) -> Self {
         self.status = status.to_string();
         self
     }
-    
+
     pub async fn build(self, db: &SqlitePool) -> Result<Reservation> {
         let now = Utc::now();
-        
+
         let result = sqlx::query!(
             "INSERT INTO reservations (equipment_id, user_id, start_time, end_time, location, status, created_at, updated_at) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -295,7 +302,7 @@ impl ReservationBuilder {
         )
         .fetch_one(db)
         .await?;
-        
+
         Ok(Reservation {
             id: result.id,
             equipment_id: self.equipment_id,
@@ -324,26 +331,26 @@ impl TestContext {
         let db = setup_memory_db().await?;
         let discord_api = Arc::new(MockDiscordApi::new());
         let clock = Arc::new(TestClock::new(Utc::now()));
-        
+
         Ok(Self {
             db,
             discord_api,
             clock,
         })
     }
-    
+
     pub async fn new_with_time(initial_time: DateTime<Utc>) -> Result<Self> {
         let db = setup_memory_db().await?;
         let discord_api = Arc::new(MockDiscordApi::new());
         let clock = Arc::new(TestClock::new(initial_time));
-        
+
         Ok(Self {
             db,
             discord_api,
             clock,
         })
     }
-    
+
     /// Manually trigger job processing (for testing job workers)
     pub async fn process_jobs(&self) -> Result<()> {
         // This will be implemented when we test the job worker
@@ -356,31 +363,31 @@ impl TestContext {
 pub async fn create_test_setup(ctx: &TestContext) -> Result<(DbGuild, Tag, Location, Equipment)> {
     let guild_id = 123456789i64;
     let channel_id = 987654321i64;
-    
+
     // Create guild
     let guild = GuildBuilder::new(guild_id)
         .with_reservation_channel(channel_id)
         .build(&ctx.db)
         .await?;
-    
+
     // Create tag
     let tag = TagBuilder::new(guild_id, "Camera")
         .with_sort_order(1)
         .build(&ctx.db)
         .await?;
-    
+
     // Create location
     let location = LocationBuilder::new(guild_id, "Club Room")
         .build(&ctx.db)
         .await?;
-    
+
     // Create equipment
     let equipment = EquipmentBuilder::new(guild_id, "Sony A7")
         .with_tag(tag.id)
         .with_default_return_location("Club Room")
         .build(&ctx.db)
         .await?;
-    
+
     Ok((guild, tag, location, equipment))
 }
 

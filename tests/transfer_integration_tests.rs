@@ -9,10 +9,10 @@ mod common;
 async fn test_immediate_transfer() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let user1_id = 12345i64;
     let user2_id = 67890i64;
-    
+
     // Create a reservation for user1
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -22,10 +22,10 @@ async fn test_immediate_transfer() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Simulate immediate transfer (this would normally be done through the handler)
     let mut tx = ctx.db.begin().await?;
-    
+
     // Update reservation owner
     sqlx::query!(
         "UPDATE reservations SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -34,7 +34,7 @@ async fn test_immediate_transfer() -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
-    
+
     // Log the transfer
     sqlx::query!(
         "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
@@ -44,9 +44,9 @@ async fn test_immediate_transfer() -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
-    
+
     tx.commit().await?;
-    
+
     // Verify transfer
     let updated_reservation = sqlx::query!(
         "SELECT user_id FROM reservations WHERE id = ?",
@@ -54,9 +54,9 @@ async fn test_immediate_transfer() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(updated_reservation.user_id, user2_id);
-    
+
     // Verify log entry
     let log_entry = sqlx::query!(
         "SELECT action, notes FROM equipment_logs WHERE equipment_id = ? AND action = 'Transferred'",
@@ -64,10 +64,13 @@ async fn test_immediate_transfer() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(log_entry.action, "Transferred");
-    assert!(log_entry.notes.unwrap_or_default().contains("Test transfer"));
-    
+    assert!(log_entry
+        .notes
+        .unwrap_or_default()
+        .contains("Test transfer"));
+
     Ok(())
 }
 
@@ -76,10 +79,10 @@ async fn test_immediate_transfer() -> Result<()> {
 async fn test_scheduled_transfer_execution() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let user1_id = 12345i64;
     let user2_id = 67890i64;
-    
+
     // Create a reservation for user1
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -89,12 +92,12 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Create a scheduled transfer request
     let execute_at = Utc::now() + Duration::minutes(30); // Execute in 30 minutes
     let expires_at = execute_at + Duration::hours(1);
     let now = Utc::now();
-    
+
     let transfer_id = sqlx::query!(
         "INSERT INTO transfer_requests 
          (reservation_id, from_user_id, to_user_id, requested_by_user_id, execute_at_utc, note, expires_at, status, created_at, updated_at)
@@ -113,7 +116,7 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     .fetch_one(&ctx.db)
     .await?
     .id;
-    
+
     // Simulate time passing to execution time
     let past_execute_time = Utc::now() - Duration::minutes(1); // Simulate past execution time
     sqlx::query!(
@@ -123,10 +126,10 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .execute(&ctx.db)
     .await?;
-    
+
     // Create job worker and process scheduled transfers
     let job_worker = oucc_kizai_bot::jobs::JobWorker::new(ctx.db.clone());
-    
+
     // Process scheduled transfers (this would normally be called by the job worker)
     let transfers = sqlx::query_as!(
         TransferRequest,
@@ -137,13 +140,13 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .fetch_all(&ctx.db)
     .await?;
-    
+
     assert_eq!(transfers.len(), 1);
     let transfer = &transfers[0];
-    
+
     // Simulate execution (simplified version of execute_scheduled_transfer)
     let mut tx = ctx.db.begin().await?;
-    
+
     // Update reservation owner
     sqlx::query!(
         "UPDATE reservations SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -152,7 +155,7 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
-    
+
     // Log the transfer
     let log_note = format!(
         "Scheduled transfer executed: from <@{}> to <@{}> by <@{}> - Reservation ID: {}{}",
@@ -160,9 +163,13 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
         transfer.to_user_id,
         transfer.requested_by_user_id,
         transfer.reservation_id,
-        if let Some(note) = &transfer.note { format!(" - Note: {}", note) } else { String::new() }
+        if let Some(note) = &transfer.note {
+            format!(" - Note: {}", note)
+        } else {
+            String::new()
+        }
     );
-    
+
     sqlx::query!(
         "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
          VALUES (?, ?, 'Transferred', NULL, 'Confirmed', 'Confirmed', ?, CURRENT_TIMESTAMP)",
@@ -172,7 +179,7 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
-    
+
     // Mark transfer as completed
     sqlx::query!(
         "UPDATE transfer_requests SET status = 'Accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -180,9 +187,9 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
-    
+
     tx.commit().await?;
-    
+
     // Verify execution
     let updated_reservation = sqlx::query!(
         "SELECT user_id FROM reservations WHERE id = ?",
@@ -190,18 +197,18 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(updated_reservation.user_id, user2_id);
-    
+
     let updated_transfer = sqlx::query!(
         "SELECT status FROM transfer_requests WHERE id = ?",
         transfer_id
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(updated_transfer.status, "Accepted");
-    
+
     Ok(())
 }
 
@@ -210,9 +217,9 @@ async fn test_scheduled_transfer_execution() -> Result<()> {
 async fn test_transfer_validation_same_user() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let user_id = 12345i64;
-    
+
     // Create a reservation
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -222,15 +229,15 @@ async fn test_transfer_validation_same_user() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Attempt to create transfer to same user (should be prevented in UI/handler)
     // This simulates the validation logic that should prevent no-op transfers
     let from_user_id = user_id;
     let to_user_id = user_id;
-    
+
     // This should be caught in the handler validation
     assert_eq!(from_user_id, to_user_id);
-    
+
     Ok(())
 }
 
@@ -239,10 +246,10 @@ async fn test_transfer_validation_same_user() -> Result<()> {
 async fn test_transfer_cancellation() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let user1_id = 12345i64;
     let user2_id = 67890i64;
-    
+
     // Create a reservation
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -252,12 +259,12 @@ async fn test_transfer_cancellation() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Create a scheduled transfer request
     let execute_at = Utc::now() + Duration::hours(1);
     let expires_at = execute_at + Duration::hours(1);
     let now = Utc::now();
-    
+
     let transfer_id = sqlx::query!(
         "INSERT INTO transfer_requests 
          (reservation_id, from_user_id, to_user_id, requested_by_user_id, execute_at_utc, note, expires_at, status, created_at, updated_at)
@@ -276,7 +283,7 @@ async fn test_transfer_cancellation() -> Result<()> {
     .fetch_one(&ctx.db)
     .await?
     .id;
-    
+
     // Cancel the transfer
     let cancel_time = Utc::now();
     sqlx::query!(
@@ -290,7 +297,7 @@ async fn test_transfer_cancellation() -> Result<()> {
     )
     .execute(&ctx.db)
     .await?;
-    
+
     // Verify cancellation
     let canceled_transfer = sqlx::query!(
         "SELECT status, canceled_at_utc, canceled_by_user_id FROM transfer_requests WHERE id = ?",
@@ -298,11 +305,11 @@ async fn test_transfer_cancellation() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(canceled_transfer.status, "Canceled");
     assert!(canceled_transfer.canceled_at_utc.is_some());
     assert_eq!(canceled_transfer.canceled_by_user_id.unwrap(), user1_id);
-    
+
     Ok(())
 }
 
@@ -311,20 +318,20 @@ async fn test_transfer_cancellation() -> Result<()> {
 async fn test_transfer_returned_reservation() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let user1_id = 12345i64;
     let user2_id = 67890i64;
-    
+
     // Create a reservation
     let reservation = common::ReservationBuilder::new(
         equipment.id,
         user1_id,
         Utc::now() - Duration::hours(1), // Started 1 hour ago
-        Utc::now() + Duration::hours(1),  // Ends in 1 hour
+        Utc::now() + Duration::hours(1), // Ends in 1 hour
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Mark reservation as returned
     let return_time = Utc::now();
     sqlx::query!(
@@ -335,15 +342,12 @@ async fn test_transfer_returned_reservation() -> Result<()> {
     )
     .execute(&ctx.db)
     .await?;
-    
+
     // Attempt to create transfer for returned reservation
-    let result = crate::transfer_tests::create_transfer_request(
-        &ctx.db,
-        reservation.id,
-        user1_id,
-        user2_id,
-    ).await;
-    
+    let result =
+        crate::transfer_tests::create_transfer_request(&ctx.db, reservation.id, user1_id, user2_id)
+            .await;
+
     // The transfer request creation itself might succeed, but execution should fail
     // In a real implementation, the validation would happen during execution
     if result.is_ok() {
@@ -354,10 +358,10 @@ async fn test_transfer_returned_reservation() -> Result<()> {
         )
         .fetch_one(&ctx.db)
         .await?;
-        
+
         // This should be caught by transfer execution validation
         assert!(reservation_check.returned_at.is_some());
     }
-    
+
     Ok(())
 }

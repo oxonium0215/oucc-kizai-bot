@@ -25,11 +25,11 @@ impl TestJobWorker {
             clock,
         }
     }
-    
+
     /// Process all pending jobs
     pub async fn process_pending_jobs(&self) -> Result<usize> {
         let current_time = self.clock.now_utc();
-        
+
         let jobs = sqlx::query_as!(
             Job,
             "SELECT * FROM jobs 
@@ -39,7 +39,7 @@ impl TestJobWorker {
         )
         .fetch_all(&self.db)
         .await?;
-        
+
         let mut processed = 0;
         for job in jobs {
             if let Err(e) = self.process_job(&job).await {
@@ -49,10 +49,10 @@ impl TestJobWorker {
                 processed += 1;
             }
         }
-        
+
         Ok(processed)
     }
-    
+
     async fn process_job(&self, job: &Job) -> Result<()> {
         // Mark job as running
         sqlx::query!(
@@ -61,7 +61,7 @@ impl TestJobWorker {
         )
         .execute(&self.db)
         .await?;
-        
+
         // Process based on job type
         match job.job_type.as_str() {
             "reminder" => self.process_reminder(job).await?,
@@ -71,7 +71,7 @@ impl TestJobWorker {
                 return Err(anyhow::anyhow!("Unknown job type: {}", job.job_type));
             }
         }
-        
+
         // Mark job as completed
         sqlx::query!(
             "UPDATE jobs SET status = 'Completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -79,10 +79,10 @@ impl TestJobWorker {
         )
         .execute(&self.db)
         .await?;
-        
+
         Ok(())
     }
-    
+
     async fn process_reminder(&self, job: &Job) -> Result<()> {
         let payload: serde_json::Value = serde_json::from_str(&job.payload)?;
         let reservation_id = payload["reservation_id"]
@@ -91,7 +91,7 @@ impl TestJobWorker {
         let reminder_type = payload["type"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing type in reminder payload"))?;
-        
+
         // Get reservation details
         let reservation = sqlx::query_as!(
             Reservation,
@@ -100,7 +100,7 @@ impl TestJobWorker {
         )
         .fetch_one(&self.db)
         .await?;
-        
+
         let equipment = sqlx::query_as!(
             Equipment,
             "SELECT * FROM equipment WHERE id = ?",
@@ -108,9 +108,9 @@ impl TestJobWorker {
         )
         .fetch_one(&self.db)
         .await?;
-        
+
         let user_id = UserId::new(reservation.user_id as u64);
-        
+
         let message = match reminder_type {
             "pre_end" => format!(
                 "📅 リマインダー: 「{}」の貸出期限まで15分です。\n返却時刻: {}",
@@ -124,7 +124,7 @@ impl TestJobWorker {
             ),
             _ => return Err(anyhow::anyhow!("Unknown reminder type: {}", reminder_type)),
         };
-        
+
         // Try to send DM, fallback to mention if DM fails
         match self.discord_api.send_dm(user_id, &message).await? {
             Some(_) => {
@@ -135,16 +135,16 @@ impl TestJobWorker {
                 self.schedule_mention_fallback(user_id, &message).await?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     async fn process_transfer_timeout(&self, job: &Job) -> Result<()> {
         let payload: serde_json::Value = serde_json::from_str(&job.payload)?;
         let transfer_id = payload["transfer_id"]
             .as_i64()
             .ok_or_else(|| anyhow::anyhow!("Missing transfer_id in transfer_timeout payload"))?;
-        
+
         // Get transfer request
         let transfer = sqlx::query_as!(
             TransferRequest,
@@ -153,7 +153,7 @@ impl TestJobWorker {
         )
         .fetch_optional(&self.db)
         .await?;
-        
+
         if let Some(transfer) = transfer {
             // Mark as expired
             sqlx::query!(
@@ -162,22 +162,23 @@ impl TestJobWorker {
             )
             .execute(&self.db)
             .await?;
-            
+
             // Notify requester
             let requester_id = UserId::new(transfer.from_user_id as u64);
             let message = "⏰ 機材の移譲リクエストが期限切れになりました。";
-            
+
             match self.discord_api.send_dm(requester_id, message).await? {
                 Some(_) => {}
                 None => {
-                    self.schedule_mention_fallback(requester_id, message).await?;
+                    self.schedule_mention_fallback(requester_id, message)
+                        .await?;
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     async fn process_retry_dm(&self, job: &Job) -> Result<()> {
         let payload: serde_json::Value = serde_json::from_str(&job.payload)?;
         let user_id = payload["user_id"]
@@ -186,9 +187,9 @@ impl TestJobWorker {
         let message = payload["message"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing message in retry_dm payload"))?;
-        
+
         let user_id = UserId::new(user_id);
-        
+
         match self.discord_api.send_dm(user_id, message).await? {
             Some(_) => {
                 // Success, no further action needed
@@ -198,20 +199,22 @@ impl TestJobWorker {
                 self.schedule_mention_fallback(user_id, message).await?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     async fn schedule_mention_fallback(&self, user_id: UserId, message: &str) -> Result<()> {
         // In a real implementation, this would post to the reservation channel
         // For testing, we'll send to a mock channel
         let channel_id = ChannelId::new(123456789);
         let mention_message = format!("<@{}> {}", user_id.get(), message);
-        
-        self.discord_api.send_channel_message(channel_id, &mention_message).await?;
+
+        self.discord_api
+            .send_channel_message(channel_id, &mention_message)
+            .await?;
         Ok(())
     }
-    
+
     async fn mark_job_failed(&self, job: &Job) -> Result<()> {
         sqlx::query!(
             "UPDATE jobs SET status = 'Failed', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -232,7 +235,7 @@ pub async fn schedule_job(
 ) -> Result<Job> {
     let now = Utc::now();
     let payload_str = serde_json::to_string(&payload)?;
-    
+
     let result = sqlx::query!(
         "INSERT INTO jobs (job_type, payload, scheduled_for, status, created_at, updated_at)
          VALUES (?, ?, ?, 'Pending', ?, ?) RETURNING id",
@@ -244,7 +247,7 @@ pub async fn schedule_job(
     )
     .fetch_one(db)
     .await?;
-    
+
     Ok(Job {
         id: result.id,
         job_type: job_type.to_string(),
@@ -262,7 +265,7 @@ pub async fn schedule_job(
 async fn test_transfer_timeout_job() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     // Create a reservation and transfer request
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -272,10 +275,10 @@ async fn test_transfer_timeout_job() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     let now = ctx.clock.now_utc();
     let expires_at = now + Duration::hours(3);
-    
+
     let transfer_result = sqlx::query!(
         "INSERT INTO transfer_requests (reservation_id, from_user_id, to_user_id, expires_at, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'Pending', ?, ?) RETURNING id",
@@ -288,32 +291,23 @@ async fn test_transfer_timeout_job() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     // Schedule transfer timeout job
     let job_payload = serde_json::json!({
         "transfer_id": transfer_result.id
     });
-    
-    schedule_job(
-        &ctx.db,
-        "transfer_timeout",
-        job_payload,
-        expires_at,
-    ).await?;
-    
+
+    schedule_job(&ctx.db, "transfer_timeout", job_payload, expires_at).await?;
+
     // Advance clock past expiry time
     ctx.clock.advance(Duration::hours(4)).await;
-    
+
     // Process jobs
-    let worker = TestJobWorker::new(
-        ctx.db.clone(),
-        ctx.discord_api.clone(),
-        ctx.clock.clone(),
-    );
-    
+    let worker = TestJobWorker::new(ctx.db.clone(), ctx.discord_api.clone(), ctx.clock.clone());
+
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Verify transfer was marked as expired
     let transfer = sqlx::query!(
         "SELECT status FROM transfer_requests WHERE id = ?",
@@ -321,15 +315,15 @@ async fn test_transfer_timeout_job() -> Result<()> {
     )
     .fetch_one(&ctx.db)
     .await?;
-    
+
     assert_eq!(transfer.status, "Expired");
-    
+
     // Verify notification was sent
     let sent_dms = ctx.discord_api.get_sent_dms().await;
     assert_eq!(sent_dms.len(), 1);
     assert_eq!(sent_dms[0].0, UserId::new(12345));
     assert!(sent_dms[0].1.contains("期限切れ"));
-    
+
     Ok(())
 }
 
@@ -337,77 +331,58 @@ async fn test_transfer_timeout_job() -> Result<()> {
 async fn test_reminder_jobs() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     let start_time = ctx.clock.now_utc();
     let end_time = start_time + Duration::hours(2);
-    
+
     // Create a reservation
-    let reservation = common::ReservationBuilder::new(
-        equipment.id,
-        12345,
-        start_time,
-        end_time,
-    )
-    .build(&ctx.db)
-    .await?;
-    
+    let reservation = common::ReservationBuilder::new(equipment.id, 12345, start_time, end_time)
+        .build(&ctx.db)
+        .await?;
+
     // Schedule pre-end reminder (15 minutes before end)
     let pre_end_time = end_time - Duration::minutes(15);
     let job_payload = serde_json::json!({
         "reservation_id": reservation.id,
         "type": "pre_end"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "reminder",
-        job_payload,
-        pre_end_time,
-    ).await?;
-    
+
+    schedule_job(&ctx.db, "reminder", job_payload, pre_end_time).await?;
+
     // Schedule return delay reminder (after end time)
     let delay_time = end_time + Duration::minutes(30);
     let job_payload = serde_json::json!({
         "reservation_id": reservation.id,
         "type": "return_delay"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "reminder",
-        job_payload,
-        delay_time,
-    ).await?;
-    
-    let worker = TestJobWorker::new(
-        ctx.db.clone(),
-        ctx.discord_api.clone(),
-        ctx.clock.clone(),
-    );
-    
+
+    schedule_job(&ctx.db, "reminder", job_payload, delay_time).await?;
+
+    let worker = TestJobWorker::new(ctx.db.clone(), ctx.discord_api.clone(), ctx.clock.clone());
+
     // Advance to pre-end reminder time
     ctx.clock.set_time(pre_end_time).await;
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Check pre-end reminder was sent
     let sent_dms = ctx.discord_api.get_sent_dms().await;
     assert_eq!(sent_dms.len(), 1);
     assert!(sent_dms[0].1.contains("15分"));
     assert!(sent_dms[0].1.contains(&equipment.name));
-    
+
     // Clear and advance to delay reminder time
     ctx.discord_api.clear().await;
     ctx.clock.set_time(delay_time).await;
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Check delay reminder was sent
     let sent_dms = ctx.discord_api.get_sent_dms().await;
     assert_eq!(sent_dms.len(), 1);
     assert!(sent_dms[0].1.contains("遅延"));
     assert!(sent_dms[0].1.contains(&equipment.name));
-    
+
     Ok(())
 }
 
@@ -415,10 +390,10 @@ async fn test_reminder_jobs() -> Result<()> {
 async fn test_dm_failure_fallback() -> Result<()> {
     let ctx = common::TestContext::new().await?;
     let (_, _, _, equipment) = common::create_test_setup(&ctx).await?;
-    
+
     // Enable DM failure mode
     ctx.discord_api.set_dm_failure_mode(true).await;
-    
+
     // Create a reservation
     let reservation = common::ReservationBuilder::new(
         equipment.id,
@@ -428,145 +403,111 @@ async fn test_dm_failure_fallback() -> Result<()> {
     )
     .build(&ctx.db)
     .await?;
-    
+
     // Schedule a reminder
     let job_payload = serde_json::json!({
         "reservation_id": reservation.id,
         "type": "pre_end"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "reminder",
-        job_payload,
-        ctx.clock.now_utc(),
-    ).await?;
-    
-    let worker = TestJobWorker::new(
-        ctx.db.clone(),
-        ctx.discord_api.clone(),
-        ctx.clock.clone(),
-    );
-    
+
+    schedule_job(&ctx.db, "reminder", job_payload, ctx.clock.now_utc()).await?;
+
+    let worker = TestJobWorker::new(ctx.db.clone(), ctx.discord_api.clone(), ctx.clock.clone());
+
     // Process job
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Verify DM was attempted but failed
     let sent_dms = ctx.discord_api.get_sent_dms().await;
     assert_eq!(sent_dms.len(), 0); // No DMs sent due to failure mode
-    
+
     // Verify fallback channel message was sent
     let channel_messages = ctx.discord_api.get_channel_messages().await;
     assert_eq!(channel_messages.len(), 1);
     assert!(channel_messages[0].1.contains("<@12345>"));
     assert!(channel_messages[0].1.contains("15分"));
-    
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_retry_dm_job() -> Result<()> {
     let ctx = common::TestContext::new().await?;
-    
+
     // Enable DM failure mode initially
     ctx.discord_api.set_dm_failure_mode(true).await;
-    
+
     // Schedule a retry DM job
     let job_payload = serde_json::json!({
         "user_id": 12345u64,
         "message": "Test retry message"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "retry_dm",
-        job_payload,
-        ctx.clock.now_utc(),
-    ).await?;
-    
-    let worker = TestJobWorker::new(
-        ctx.db.clone(),
-        ctx.discord_api.clone(),
-        ctx.clock.clone(),
-    );
-    
+
+    schedule_job(&ctx.db, "retry_dm", job_payload, ctx.clock.now_utc()).await?;
+
+    let worker = TestJobWorker::new(ctx.db.clone(), ctx.discord_api.clone(), ctx.clock.clone());
+
     // Process job - should fail and fall back to mention
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Verify fallback was used
     let channel_messages = ctx.discord_api.get_channel_messages().await;
     assert_eq!(channel_messages.len(), 1);
     assert!(channel_messages[0].1.contains("<@12345>"));
     assert!(channel_messages[0].1.contains("Test retry message"));
-    
+
     // Now disable DM failure mode and try again
     ctx.discord_api.clear().await;
     ctx.discord_api.set_dm_failure_mode(false).await;
-    
+
     // Schedule another retry
     let job_payload = serde_json::json!({
         "user_id": 12345u64,
         "message": "Test successful retry"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "retry_dm",
-        job_payload,
-        ctx.clock.now_utc(),
-    ).await?;
-    
+
+    schedule_job(&ctx.db, "retry_dm", job_payload, ctx.clock.now_utc()).await?;
+
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 1);
-    
+
     // Verify DM was sent successfully
     let sent_dms = ctx.discord_api.get_sent_dms().await;
     assert_eq!(sent_dms.len(), 1);
     assert_eq!(sent_dms[0].1, "Test successful retry");
-    
+
     // No fallback channel message should have been sent
     let channel_messages = ctx.discord_api.get_channel_messages().await;
     assert_eq!(channel_messages.len(), 0);
-    
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_job_failure_handling() -> Result<()> {
     let ctx = common::TestContext::new().await?;
-    
+
     // Schedule a job with invalid payload
     let job_payload = serde_json::json!({
         "invalid": "payload"
     });
-    
-    schedule_job(
-        &ctx.db,
-        "reminder",
-        job_payload,
-        ctx.clock.now_utc(),
-    ).await?;
-    
-    let worker = TestJobWorker::new(
-        ctx.db.clone(),
-        ctx.discord_api.clone(),
-        ctx.clock.clone(),
-    );
-    
+
+    schedule_job(&ctx.db, "reminder", job_payload, ctx.clock.now_utc()).await?;
+
+    let worker = TestJobWorker::new(ctx.db.clone(), ctx.discord_api.clone(), ctx.clock.clone());
+
     // Process job - should fail
     let processed = worker.process_pending_jobs().await?;
     assert_eq!(processed, 0); // Job failed, not counted as processed
-    
+
     // Verify job was marked as failed
-    let failed_jobs = sqlx::query!(
-        "SELECT COUNT(*) as count FROM jobs WHERE status = 'Failed'"
-    )
-    .fetch_one(&ctx.db)
-    .await?;
-    
+    let failed_jobs = sqlx::query!("SELECT COUNT(*) as count FROM jobs WHERE status = 'Failed'")
+        .fetch_one(&ctx.db)
+        .await?;
+
     assert_eq!(failed_jobs.count, 1);
-    
+
     Ok(())
 }

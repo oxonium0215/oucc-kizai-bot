@@ -10,7 +10,7 @@ fn test_required_permissions_const() {
         | Permissions::MANAGE_MESSAGES
         | Permissions::EMBED_LINKS
         | Permissions::READ_MESSAGE_HISTORY;
-    
+
     assert!(required.contains(Permissions::SEND_MESSAGES));
     assert!(required.contains(Permissions::VIEW_CHANNEL));
     assert!(required.contains(Permissions::MANAGE_MESSAGES));
@@ -28,7 +28,7 @@ fn test_permission_missing_list() {
         "Embed Links".to_string(),
         "Read Message History".to_string(),
     ];
-    
+
     assert_eq!(missing.len(), 5);
     assert!(missing.contains(&"Send Messages".to_string()));
     assert!(missing.contains(&"Embed Links".to_string()));

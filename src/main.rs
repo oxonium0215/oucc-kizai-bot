@@ -11,11 +11,10 @@ mod database;
 mod equipment;
 mod handlers;
 mod jobs;
-mod maintenance;
 mod models;
 pub mod time;
-pub mod utils;
 pub mod traits;
+pub mod utils;
 
 use config::Config;
 use handlers::Handler;
