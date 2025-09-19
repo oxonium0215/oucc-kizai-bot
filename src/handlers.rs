@@ -182,6 +182,15 @@ impl Handler {
             None
         }
     }
+
+    /// Get the effective token for state lookup - either resolved from custom_id or fallback to interaction token
+    async fn get_effective_token(interaction: &ComponentInteraction) -> String {
+        if let Some(resolved_token) = Self::resolve_token_from_custom_id(&interaction.data.custom_id).await {
+            resolved_token
+        } else {
+            interaction.token.clone()
+        }
+    }
 }
 
 #[async_trait]
@@ -669,6 +678,9 @@ impl Handler {
         }
 
         // Initialize management state for this user session
+        // Generate short session ID to avoid Discord's 100-character custom_id limit
+        let _short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+        
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
@@ -6141,12 +6153,7 @@ impl Handler {
         }
 
         // Resolve the original token from custom_id
-        let original_token = if let Some(token) = Self::resolve_token_from_custom_id(&interaction.data.custom_id).await {
-            token
-        } else {
-            // Fall back to using interaction token directly
-            interaction.token.clone()
-        };
+        let original_token = Self::get_effective_token(interaction).await;
 
         // Update page in state
         let state_key = (
@@ -6184,10 +6191,11 @@ impl Handler {
         }
 
         // Update page in state
+        let effective_token = Self::get_effective_token(interaction).await;
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            interaction.token.clone(),
+            effective_token,
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;
