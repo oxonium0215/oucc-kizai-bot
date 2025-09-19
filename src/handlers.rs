@@ -497,6 +497,10 @@ impl Handler {
                     self.handle_transfer_confirm(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("transfer_cancel_") {
                     self.handle_transfer_cancel(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("transfer_approve_") {
+                    self.handle_transfer_approve(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("transfer_deny_") {
+                    self.handle_transfer_deny(ctx, interaction).await?
                 } else {
                     error!(
                         "Unknown component interaction: {}",
@@ -4373,16 +4377,12 @@ impl Handler {
 
         // Extract form data
         let mut new_owner_id_str = String::new();
-        let mut transfer_type = String::new();
-        let mut schedule_time = String::new();
         let mut note = String::new();
 
         for action_row in &modal.data.components {
             if let serenity::all::ActionRowComponent::InputText(input) = &action_row.components[0] {
                 match input.custom_id.as_str() {
                     "new_owner_id" => new_owner_id_str = input.value.clone().unwrap_or_default(),
-                    "transfer_type" => transfer_type = input.value.clone().unwrap_or_default(),
-                    "schedule_time" => schedule_time = input.value.clone().unwrap_or_default(),
                     "transfer_note" => note = input.value.clone().unwrap_or_default(),
                     _ => {}
                 }
@@ -4402,17 +4402,6 @@ impl Handler {
                 return Ok(());
             }
         };
-
-        // Validate transfer type
-        if transfer_type != "immediate" && transfer_type != "schedule" {
-            let response = serenity::all::CreateInteractionResponse::Message(
-                serenity::all::CreateInteractionResponseMessage::new()
-                    .content("❌ Transfer type must be either 'immediate' or 'schedule'.")
-                    .ephemeral(true),
-            );
-            modal.create_response(&ctx.http, response).await?;
-            return Ok(());
-        }
 
         // Validate new owner exists in guild and is not a bot
         let guild_id = modal.guild_id.unwrap();
@@ -4516,75 +4505,17 @@ impl Handler {
             return Ok(());
         }
 
-        // Process based on transfer type
-        if transfer_type == "immediate" {
-            self.execute_immediate_transfer(
-                ctx,
-                modal,
-                reservation_id,
-                reservation.user_id,
-                new_owner_id,
-                requesting_user_id,
-                if note.is_empty() { None } else { Some(note) },
-            )
-            .await?;
-        } else {
-            // Scheduled transfer
-            if schedule_time.is_empty() {
-                let response = serenity::all::CreateInteractionResponse::Message(
-                    serenity::all::CreateInteractionResponseMessage::new()
-                        .content("❌ Schedule time is required for scheduled transfers.")
-                        .ephemeral(true),
-                );
-                modal.create_response(&ctx.http, response).await?;
-                return Ok(());
-            }
-
-            let execute_at_utc = match crate::time::parse_jst_string(&schedule_time) {
-                Some(time) => time,
-                None => {
-                    let response = serenity::all::CreateInteractionResponse::Message(
-                        serenity::all::CreateInteractionResponseMessage::new()
-                            .content("❌ Invalid time format. Please use YYYY-MM-DD HH:MM in JST.")
-                            .ephemeral(true),
-                    );
-                    modal.create_response(&ctx.http, response).await?;
-                    return Ok(());
-                }
-            };
-
-            // Validate scheduled time is within reservation window
-            let min_execute_time = std::cmp::max(now_utc, crate::time::naive_to_utc(reservation.start_time));
-            if execute_at_utc <= now_utc
-                || execute_at_utc < min_execute_time
-                || execute_at_utc >= crate::time::naive_to_utc(reservation.end_time)
-            {
-                let min_jst = crate::time::utc_to_jst_string(min_execute_time);
-                let max_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation.end_time));
-                let response = serenity::all::CreateInteractionResponse::Message(
-                    serenity::all::CreateInteractionResponseMessage::new()
-                        .content(format!(
-                            "❌ Transfer time must be between {} and {} (JST).",
-                            min_jst, max_jst
-                        ))
-                        .ephemeral(true),
-                );
-                modal.create_response(&ctx.http, response).await?;
-                return Ok(());
-            }
-
-            self.create_scheduled_transfer(
-                ctx,
-                modal,
-                reservation_id,
-                reservation.user_id,
-                new_owner_id,
-                requesting_user_id,
-                execute_at_utc,
-                if note.is_empty() { None } else { Some(note) },
-            )
-            .await?;
-        }
+        // Create transfer approval request instead of executing immediately
+        self.create_transfer_approval_request(
+            ctx,
+            modal,
+            reservation_id,
+            reservation.user_id,
+            new_owner_id,
+            requesting_user_id,
+            if note.is_empty() { None } else { Some(note) },
+        )
+        .await?;
 
         Ok(())
     }
@@ -5940,25 +5871,6 @@ impl Handler {
                     .max_length(20), // Discord snowflake max length
             ),
             serenity::all::CreateActionRow::InputText(
-                CreateInputText::new(InputTextStyle::Short, "Transfer Type", "transfer_type")
-                    .placeholder("immediate or schedule")
-                    .value("immediate")
-                    .required(true)
-                    .min_length(9)
-                    .max_length(9),
-            ),
-            serenity::all::CreateActionRow::InputText(
-                CreateInputText::new(
-                    InputTextStyle::Short,
-                    "Schedule Time (JST)",
-                    "schedule_time",
-                )
-                .placeholder("YYYY-MM-DD HH:MM (only if type=schedule)")
-                .required(false)
-                .min_length(16)
-                .max_length(16),
-            ),
-            serenity::all::CreateActionRow::InputText(
                 CreateInputText::new(
                     InputTextStyle::Paragraph,
                     "Note (Optional)",
@@ -6071,6 +5983,293 @@ impl Handler {
         Ok(())
     }
 
+    /// Handle transfer approval
+    async fn handle_transfer_approve(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let transfer_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("transfer_approve_")
+            .unwrap_or("");
+
+        let transfer_id: i64 = transfer_id_str.parse().unwrap_or(0);
+        if transfer_id == 0 {
+            error!(
+                "Invalid transfer ID in approve button: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        let user_id = interaction.user.id.get() as i64;
+
+        // Get transfer request details
+        let transfer = sqlx::query!(
+            "SELECT id, reservation_id, from_user_id, to_user_id, requested_by_user_id, status
+             FROM transfer_requests WHERE id = ? AND status = 'Pending'",
+            transfer_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let transfer = match transfer {
+            Some(t) => t,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Transfer request not found or already processed.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Verify the user is the target recipient
+        if transfer.to_user_id != user_id {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You are not authorized to approve this transfer.")
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Execute the transfer
+        self.execute_transfer_approval(ctx, interaction, transfer_id, true).await
+    }
+
+    /// Handle transfer denial
+    async fn handle_transfer_deny(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let transfer_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("transfer_deny_")
+            .unwrap_or("");
+
+        let transfer_id: i64 = transfer_id_str.parse().unwrap_or(0);
+        if transfer_id == 0 {
+            error!(
+                "Invalid transfer ID in deny button: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        let user_id = interaction.user.id.get() as i64;
+
+        // Get transfer request details
+        let transfer = sqlx::query!(
+            "SELECT id, reservation_id, from_user_id, to_user_id, requested_by_user_id, status
+             FROM transfer_requests WHERE id = ? AND status = 'Pending'",
+            transfer_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let transfer = match transfer {
+            Some(t) => t,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Transfer request not found or already processed.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Verify the user is the target recipient
+        if transfer.to_user_id != user_id {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You are not authorized to deny this transfer.")
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Deny the transfer
+        self.execute_transfer_approval(ctx, interaction, transfer_id, false).await
+    }
+
+    /// Execute transfer approval or denial
+    async fn execute_transfer_approval(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        transfer_id: i64,
+        approved: bool,
+    ) -> Result<()> {
+        let mut tx = self.db.begin().await?;
+
+        // Get full transfer and reservation details
+        let transfer_details = sqlx::query!(
+            "SELECT tr.reservation_id, tr.from_user_id, tr.to_user_id, tr.requested_by_user_id, tr.note,
+                    r.equipment_id, r.start_time, r.end_time, r.location, r.status as reservation_status,
+                    e.name as equipment_name
+             FROM transfer_requests tr
+             JOIN reservations r ON tr.reservation_id = r.id
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE tr.id = ? AND tr.status = 'Pending'",
+            transfer_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let details = match transfer_details {
+            Some(d) => d,
+            None => {
+                tx.rollback().await?;
+                let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Transfer request no longer valid.")
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        if approved {
+            // Update reservation owner
+            sqlx::query!(
+                "UPDATE reservations SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                details.to_user_id,
+                details.reservation_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            // Update transfer request status
+            sqlx::query!(
+                "UPDATE transfer_requests SET status = 'Accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                transfer_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            // Log the transfer
+            let log_note = format!(
+                "Transfer approved by recipient. {}",
+                details.note.as_deref().unwrap_or("")
+            );
+            sqlx::query!(
+                "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
+                 VALUES (?, ?, 'Transferred', NULL, 'Confirmed', 'Confirmed', ?, CURRENT_TIMESTAMP)",
+                details.equipment_id,
+                details.requested_by_user_id,
+                log_note
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+
+            // Respond to the approval
+            let start_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(details.start_time));
+            let end_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(details.end_time));
+
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content(format!(
+                        "✅ **移譲を承認しました**\n\n「{}」の予約があなたに移譲されました。\n\n📅 **期間:** {} - {} (JST)\n📍 **場所:** {}",
+                        details.equipment_name,
+                        start_jst,
+                        end_jst,
+                        details.location.as_deref().unwrap_or("未指定")
+                    ))
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+
+            // Notify the original requester
+            self.notify_transfer_outcome(ctx, details.requested_by_user_id, &details.equipment_name, true, None).await;
+
+        } else {
+            // Deny the transfer
+            sqlx::query!(
+                "UPDATE transfer_requests SET status = 'Denied', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                transfer_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+
+            // Respond to the denial
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content(format!(
+                        "❌ **移譲を拒否しました**\n\n「{}」の予約移譲依頼を拒否しました。依頼者に通知されます。",
+                        details.equipment_name
+                    ))
+                    .components(vec![]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+
+            // Notify the original requester
+            self.notify_transfer_outcome(ctx, details.requested_by_user_id, &details.equipment_name, false, Some("受信者によって拒否されました")).await;
+        }
+
+        // Trigger equipment display reconciliation if approved
+        if approved {
+            if let Some(guild_id) = interaction.guild_id {
+                let guild_id_i64 = guild_id.get() as i64;
+                if let Err(e) = self.reconcile_guild_display(ctx, guild_id_i64).await {
+                    error!("Failed to reconcile display after transfer: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Notify the transfer requester of the outcome
+    async fn notify_transfer_outcome(
+        &self,
+        ctx: &Context,
+        requester_id: i64,
+        equipment_name: &str,
+        approved: bool,
+        reason: Option<&str>,
+    ) {
+        let user_id = serenity::all::UserId::new(requester_id as u64);
+        let message = if approved {
+            format!("✅ **移譲承認通知**\n\n「{}」の予約移譲依頼が承認されました。", equipment_name)
+        } else {
+            format!(
+                "❌ **移譲拒否通知**\n\n「{}」の予約移譲依頼が拒否されました。\n\n理由: {}",
+                equipment_name,
+                reason.unwrap_or("受信者によって拒否されました")
+            )
+        };
+
+        match user_id.create_dm_channel(&ctx.http).await {
+            Ok(dm_channel) => {
+                if let Err(e) = dm_channel
+                    .send_message(&ctx.http, serenity::all::CreateMessage::new().content(&message))
+                    .await
+                {
+                    tracing::warn!("Failed to send transfer outcome DM to user {}: {}", requester_id, e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create DM channel with user {}: {}", requester_id, e);
+            }
+        }
+    }
+
     /// Handle transfer confirmation (for future use with scheduled transfers)
     async fn handle_transfer_confirm(
         &self,
@@ -6086,6 +6285,153 @@ impl Handler {
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
+    }
+
+    /// Create a transfer approval request with DM notification 
+    async fn create_transfer_approval_request(
+        &self,
+        ctx: &Context,
+        modal: &serenity::all::ModalInteraction,
+        reservation_id: i64,
+        from_user_id: i64,
+        to_user_id: i64,
+        requesting_user_id: i64,
+        note: Option<String>,
+    ) -> Result<()> {
+        let mut tx = self.db.begin().await?;
+
+        // Check for existing pending transfer requests for this reservation
+        let existing = sqlx::query!(
+            "SELECT id FROM transfer_requests WHERE reservation_id = ? AND status = 'Pending'",
+            reservation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if existing.is_some() {
+            tx.rollback().await?;
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ A transfer request for this reservation is already pending.")
+                    .ephemeral(true),
+            );
+            modal.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Create transfer request with 3-hour expiry
+        let now = chrono::Utc::now();
+        let expires_at = now + chrono::Duration::hours(3);
+
+        let transfer_id = sqlx::query!(
+            "INSERT INTO transfer_requests 
+             (reservation_id, from_user_id, to_user_id, requested_by_user_id, execute_at_utc, note, expires_at, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, NULL, ?, ?, 'Pending', ?, ?) 
+             RETURNING id",
+            reservation_id,
+            from_user_id,
+            to_user_id,
+            requesting_user_id,
+            note,
+            expires_at,
+            now,
+            now
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // Get equipment name for the notification
+        let reservation_details = sqlx::query!(
+            "SELECT e.name as equipment_name, r.start_time, r.end_time, r.location
+             FROM reservations r
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE r.id = ?",
+            reservation_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        let start_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation_details.start_time));
+        let end_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation_details.end_time));
+
+        // Send DM to target user requesting approval
+        let approval_message = format!(
+            "📤 **機材移譲の依頼**\n\n<@{}>から「{}」の予約移譲の依頼があります。\n\n📅 **期間:** {} - {} (JST)\n📍 **場所:** {}\n\n{}承認しますか？\n\n⚠️ この依頼は3時間後に自動的に期限切れになります。",
+            requesting_user_id,
+            reservation_details.equipment_name,
+            start_jst,
+            end_jst,
+            reservation_details.location.as_deref().unwrap_or("未指定"),
+            if let Some(ref note_text) = note {
+                format!("📝 **メモ:** {}\n\n", note_text)
+            } else {
+                String::new()
+            }
+        );
+
+        let target_user_id = serenity::all::UserId::new(to_user_id as u64);
+        
+        // Try to send DM with approval buttons
+        let dm_sent = self.send_transfer_approval_dm(ctx, target_user_id, transfer_id.id, &approval_message).await;
+
+        // Respond to the original interaction
+        let confirmation_message = if dm_sent {
+            format!("✅ **移譲依頼を送信しました**\n\n<@{}>にDMで承認依頼を送信しました。承認されると予約が移譲されます。\n\n⏰ 依頼は3時間後に自動的に期限切れになります。", to_user_id)
+        } else {
+            format!("⚠️ **移譲依頼を作成しました（DM送信失敗）**\n\n<@{}>へのDM送信に失敗しましたが、依頼は作成されました。ユーザーに直接連絡を取ってください。\n\n⏰ 依頼は3時間後に自動的に期限切れになります。", to_user_id)
+        };
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(confirmation_message)
+                .ephemeral(true),
+        );
+        modal.create_response(&ctx.http, response).await?;
+
+        Ok(())
+    }
+
+    /// Send DM with approval buttons to target user
+    async fn send_transfer_approval_dm(
+        &self,
+        ctx: &Context,
+        user_id: serenity::all::UserId,
+        transfer_id: i64,
+        message: &str,
+    ) -> bool {
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("transfer_approve_{}", transfer_id))
+                .label("承認する")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("transfer_deny_{}", transfer_id))
+                .label("拒否する")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        match user_id.create_dm_channel(&ctx.http).await {
+            Ok(dm_channel) => {
+                match dm_channel
+                    .send_message(&ctx.http, serenity::all::CreateMessage::new()
+                        .content(message)
+                        .components(vec![buttons]))
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!("Failed to send DM to user {}: {}", user_id, e);
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create DM channel with user {}: {}", user_id, e);
+                false
+            }
+        }
     }
 
     /// Execute immediate transfer
