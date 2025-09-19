@@ -4478,7 +4478,7 @@ impl Handler {
         }
 
         let now_utc = chrono::Utc::now();
-        if reservation.end_time <= now_utc {
+        if crate::time::naive_to_utc(reservation.end_time) <= now_utc {
             let response = serenity::all::CreateInteractionResponse::Message(
                 serenity::all::CreateInteractionResponseMessage::new()
                     .content("❌ Cannot transfer a reservation that has ended.")
@@ -4554,13 +4554,13 @@ impl Handler {
             };
 
             // Validate scheduled time is within reservation window
-            let min_execute_time = std::cmp::max(now_utc, reservation.start_time);
+            let min_execute_time = std::cmp::max(now_utc, crate::time::naive_to_utc(reservation.start_time));
             if execute_at_utc <= now_utc
                 || execute_at_utc < min_execute_time
-                || execute_at_utc >= reservation.end_time
+                || execute_at_utc >= crate::time::naive_to_utc(reservation.end_time)
             {
                 let min_jst = crate::time::utc_to_jst_string(min_execute_time);
-                let max_jst = crate::time::utc_to_jst_string(reservation.end_time);
+                let max_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation.end_time));
                 let response = serenity::all::CreateInteractionResponse::Message(
                     serenity::all::CreateInteractionResponseMessage::new()
                         .content(format!(
@@ -5782,21 +5782,21 @@ impl Handler {
         // Also check if user is admin - admins can transfer any reservation
         let is_admin = utils::is_admin(ctx, guild_id, interaction.user.id).await?;
 
-        if user_reservations.is_empty() && !is_admin {
-            let response = serenity::all::CreateInteractionResponse::Message(
-                serenity::all::CreateInteractionResponseMessage::new()
-                    .content(
-                        "❌ You don't have any active or upcoming reservations for this equipment.",
-                    )
-                    .ephemeral(true),
-            );
-            interaction.create_response(&ctx.http, response).await?;
-            return Ok(());
-        }
+        if user_reservations.is_empty() {
+            if !is_admin {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(
+                            "❌ You don't have any active or upcoming reservations for this equipment.",
+                        )
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
 
-        // If admin and no personal reservations, find any active/upcoming reservations
-        let available_reservations = if user_reservations.is_empty() && is_admin {
-            sqlx::query!(
+            // Admin with no personal reservations - find any active reservations  
+            let admin_reservations = sqlx::query!(
                 "SELECT id, start_time, end_time, status, user_id FROM reservations 
                  WHERE equipment_id = ? AND status = 'Confirmed' 
                  AND end_time > CURRENT_TIMESTAMP AND returned_at IS NULL
@@ -5804,24 +5804,26 @@ impl Handler {
                 equipment_id
             )
             .fetch_all(&self.db)
-            .await?
+            .await?;
+
+            if admin_reservations.is_empty() {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ No active or upcoming reservations found for this equipment.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+
+            // Show transfer modal for the first available reservation
+            self.show_transfer_modal(ctx, interaction, admin_reservations[0].id.unwrap_or(0))
+                .await
         } else {
-            user_reservations
-        };
-
-        if available_reservations.is_empty() {
-            let response = serenity::all::CreateInteractionResponse::Message(
-                serenity::all::CreateInteractionResponseMessage::new()
-                    .content("❌ No active or upcoming reservations found for this equipment.")
-                    .ephemeral(true),
-            );
-            interaction.create_response(&ctx.http, response).await?;
-            return Ok(());
+            // Show transfer modal for the first user reservation
+            self.show_transfer_modal(ctx, interaction, user_reservations[0].id.unwrap_or(0))
+                .await
         }
-
-        // Show transfer modal for the first available reservation
-        self.show_transfer_modal(ctx, interaction, available_reservations[0].id)
-            .await
     }
 
     /// Handle transfer action from Overall Management panel
@@ -5922,8 +5924,8 @@ impl Handler {
         .fetch_one(&self.db)
         .await?;
 
-        let start_jst = crate::time::utc_to_jst_string(reservation.start_time);
-        let end_jst = crate::time::utc_to_jst_string(reservation.end_time);
+        let start_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation.start_time));
+        let end_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation.end_time));
 
         let modal = CreateModal::new(
             format!("transfer_modal_{}", reservation_id),
@@ -6021,7 +6023,7 @@ impl Handler {
         };
 
         // Check permissions: original requester or admin can cancel
-        let is_requester = transfer.requested_by_user_id == user_id;
+        let is_requester = transfer.requested_by_user_id == Some(user_id);
         let is_admin = utils::is_admin(ctx, guild_id, interaction.user.id).await?;
 
         if !is_requester && !is_admin {
@@ -6050,7 +6052,7 @@ impl Handler {
 
         let execute_jst = transfer
             .execute_at_utc
-            .map(|t| crate::time::utc_to_jst_string(t))
+            .map(|t| crate::time::utc_to_jst_string(crate::time::naive_to_utc(t)))
             .unwrap_or_else(|| "Unknown".to_string());
 
         let response = serenity::all::CreateInteractionResponse::UpdateMessage(
@@ -6160,8 +6162,8 @@ impl Handler {
         .fetch_one(&self.db)
         .await?;
 
-        let start_jst = crate::time::utc_to_jst_string(reservation_details.start_time);
-        let end_jst = crate::time::utc_to_jst_string(reservation_details.end_time);
+        let start_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation_details.start_time));
+        let end_jst = crate::time::utc_to_jst_string(crate::time::naive_to_utc(reservation_details.end_time));
 
         let response = serenity::all::CreateInteractionResponse::Message(
             serenity::all::CreateInteractionResponseMessage::new()

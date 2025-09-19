@@ -90,19 +90,19 @@ impl JobWorker {
         let transfers: Vec<crate::models::TransferRequest> = transfer_rows
             .into_iter()
             .map(|row| crate::models::TransferRequest {
-                id: row.id,
+                id: row.id.unwrap_or(0),
                 reservation_id: row.reservation_id,
                 from_user_id: row.from_user_id,
                 to_user_id: row.to_user_id,
-                requested_by_user_id: row.requested_by_user_id,
+                requested_by_user_id: row.requested_by_user_id.unwrap_or(row.from_user_id),
                 execute_at_utc: row.execute_at_utc.map(naive_to_utc),
                 note: row.note,
                 expires_at: naive_to_utc(row.expires_at),
                 status: row.status,
                 canceled_at_utc: row.canceled_at_utc.map(naive_to_utc),
                 canceled_by_user_id: row.canceled_by_user_id,
-                created_at: naive_to_utc(row.created_at),
-                updated_at: naive_to_utc(row.updated_at),
+                created_at: naive_to_utc(row.created_at.unwrap_or_else(|| Utc::now().naive_utc())),
+                updated_at: naive_to_utc(row.updated_at.unwrap_or_else(|| Utc::now().naive_utc())),
             })
             .collect();
 
