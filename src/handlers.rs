@@ -406,6 +406,10 @@ impl Handler {
                     self.handle_equipment_view_log(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("eq_delete_") {
                     self.handle_equipment_delete(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("eq_delete_confirm_") {
+                    self.handle_equipment_delete_confirm(ctx, interaction).await?
+                } else if interaction.data.custom_id == "eq_delete_cancel" {
+                    self.handle_equipment_delete_cancel(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("change_") {
                     self.handle_equipment_change(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("return_") {
@@ -1019,8 +1023,10 @@ impl Handler {
             "add_location_modal" => self.handle_add_location_modal(ctx, interaction).await?,
             "add_equipment_modal" => self.handle_add_equipment_modal(ctx, interaction).await?,
             _ => {
-                // Check for dynamic reservation modals
-                if interaction.data.custom_id.starts_with("reserve_modal:") {
+                // Check for dynamic equipment rename modals
+                if interaction.data.custom_id.starts_with("eq_rename_modal_") {
+                    self.handle_equipment_rename_modal(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("reserve_modal:") {
                     self.handle_reservation_modal(ctx, interaction).await?
                 } else if interaction
                     .data
@@ -1299,6 +1305,123 @@ impl Handler {
                 let response = serenity::all::CreateInteractionResponse::Message(
                     serenity::all::CreateInteractionResponseMessage::new()
                         .content("❌ Failed to add equipment. It might already exist.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_equipment_rename_modal(
+        &self,
+        ctx: &Context,
+        interaction: &ModalInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to rename equipment.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Extract equipment ID from custom_id
+        let equipment_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("eq_rename_modal_")
+            .unwrap_or("");
+
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!(
+                "Invalid equipment ID in rename modal: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        // Extract new name from modal
+        let mut new_name = String::new();
+        for row in &interaction.data.components {
+            for component in &row.components {
+                if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    if input_text.custom_id == "name" {
+                        new_name = input_text.value.clone().unwrap_or_default().trim().to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if new_name.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Equipment name cannot be empty.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Get current equipment info before updating
+        let current_equipment = sqlx::query!(
+            "SELECT name FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let old_name = match current_equipment {
+            Some(eq) => eq.name,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Equipment not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Update equipment name
+        match sqlx::query("UPDATE equipment SET name = ? WHERE id = ?")
+            .bind(&new_name)
+            .bind(equipment_id)
+            .execute(&self.db)
+            .await
+        {
+            Ok(_) => {
+                // Log the rename action
+                let user_id = interaction.user.id.get() as i64;
+                let _ = sqlx::query(
+                    "INSERT INTO equipment_logs (equipment_id, user_id, action, notes, timestamp)
+                     VALUES (?, ?, 'Renamed', ?, CURRENT_TIMESTAMP)"
+                )
+                .bind(equipment_id)
+                .bind(user_id)
+                .bind(format!("Renamed from '{}' to '{}'", old_name, new_name))
+                .execute(&self.db)
+                .await;
+
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content(format!("✅ Equipment renamed from '{}' to '{}' successfully! Use 'Refresh Display' to see the changes.", old_name, new_name))
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+            }
+            Err(e) => {
+                error!("Failed to rename equipment: {}", e);
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Failed to rename equipment. The name might already exist.")
                         .ephemeral(true),
                 );
                 interaction.create_response(&ctx.http, response).await?;
@@ -1682,12 +1805,59 @@ impl Handler {
             return Ok(());
         }
 
-        // TODO: Implement equipment rename functionality
-        let response = serenity::all::CreateInteractionResponse::Message(
-            serenity::all::CreateInteractionResponseMessage::new()
-                .content("🚧 Equipment rename functionality coming soon!")
-                .ephemeral(true),
-        );
+        // Extract equipment ID from custom_id
+        let equipment_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("eq_rename_")
+            .unwrap_or("");
+
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!(
+                "Invalid equipment ID in rename button: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        // Get current equipment name
+        let equipment = sqlx::query!(
+            "SELECT name FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let current_name = match equipment {
+            Some(eq) => eq.name,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Equipment not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Show modal for renaming
+        use serenity::all::{CreateActionRow, CreateInputText, CreateModal, InputTextStyle};
+
+        let modal = CreateModal::new(
+            format!("eq_rename_modal_{}", equipment_id),
+            "Rename Equipment",
+        )
+        .components(vec![CreateActionRow::InputText(
+            CreateInputText::new(InputTextStyle::Short, "name", "New Equipment Name")
+                .value(&current_name)
+                .placeholder("Enter the new name for this equipment")
+                .required(true)
+                .max_length(100),
+        )]);
+
+        let response = serenity::all::CreateInteractionResponse::Modal(modal);
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
@@ -1786,10 +1956,210 @@ impl Handler {
             return Ok(());
         }
 
-        // TODO: Implement equipment deletion functionality
+        // Extract equipment ID from custom_id
+        let equipment_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("eq_delete_")
+            .unwrap_or("");
+
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!(
+                "Invalid equipment ID in delete button: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        // Get equipment information and check for active reservations
+        let equipment = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, status FROM equipment WHERE id = ?"
+        )
+        .bind(equipment_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let equipment = match equipment {
+            Some((name, status)) => (name, status),
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Equipment not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Check for active reservations
+        let active_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM reservations 
+             WHERE equipment_id = ? AND status = 'Confirmed' AND end_time > CURRENT_TIMESTAMP"
+        )
+        .bind(equipment_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        if active_count.0 > 0 {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content(format!(
+                        "❌ Cannot delete equipment '{}' because it has {} active reservation(s). Cancel all reservations first.",
+                        equipment.0, active_count.0
+                    ))
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Show confirmation dialog
+        use serenity::all::{ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, Colour};
+
+        let embed = CreateEmbed::new()
+            .title("⚠️ Confirm Equipment Deletion")
+            .description(format!(
+                "Are you sure you want to delete the equipment '{}'?\n\n\
+                **This action cannot be undone!**\n\
+                All historical data and logs for this equipment will be permanently removed.",
+                equipment.0
+            ))
+            .field("Current Status", &equipment.1, true)
+            .color(Colour::RED);
+
+        let buttons = vec![
+            CreateButton::new(format!("eq_delete_confirm_{}", equipment_id))
+                .label("🗑️ Yes, Delete Equipment")
+                .style(ButtonStyle::Danger),
+            CreateButton::new("eq_delete_cancel")
+                .label("❌ Cancel")
+                .style(ButtonStyle::Secondary),
+        ];
+
+        let components = vec![CreateActionRow::Buttons(buttons)];
+
         let response = serenity::all::CreateInteractionResponse::Message(
             serenity::all::CreateInteractionResponseMessage::new()
-                .content("🚧 Equipment deletion functionality coming soon!")
+                .embed(embed)
+                .components(components)
+                .ephemeral(true),
+        );
+
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_equipment_delete_confirm(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to delete equipment.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Extract equipment ID from custom_id
+        let equipment_id_str = interaction
+            .data
+            .custom_id
+            .strip_prefix("eq_delete_confirm_")
+            .unwrap_or("");
+
+        let equipment_id: i64 = equipment_id_str.parse().unwrap_or(0);
+        if equipment_id == 0 {
+            error!(
+                "Invalid equipment ID in delete confirm button: {}",
+                interaction.data.custom_id
+            );
+            return Ok(());
+        }
+
+        // Get equipment name before deletion
+        let equipment = sqlx::query!(
+            "SELECT name FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let equipment_name = match equipment {
+            Some(eq) => eq.name,
+            None => {
+                let response = serenity::all::CreateInteractionResponse::Message(
+                    serenity::all::CreateInteractionResponseMessage::new()
+                        .content("❌ Equipment not found.")
+                        .ephemeral(true),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Delete equipment and related data (in transaction)
+        let mut tx = self.db.begin().await?;
+
+        // Delete related data first (due to foreign keys)
+        // Delete equipment logs
+        sqlx::query("DELETE FROM equipment_logs WHERE equipment_id = ?")
+            .bind(equipment_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Delete any future reservations (there shouldn't be any based on earlier check)
+        sqlx::query("DELETE FROM reservations WHERE equipment_id = ?")
+            .bind(equipment_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Finally delete the equipment itself
+        let delete_result = sqlx::query("DELETE FROM equipment WHERE id = ?")
+            .bind(equipment_id)
+            .execute(&mut *tx)
+            .await?;
+
+        if delete_result.rows_affected() == 0 {
+            tx.rollback().await?;
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ Equipment not found or already deleted.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Commit the transaction
+        tx.commit().await?;
+
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(format!(
+                    "✅ Equipment '{}' has been permanently deleted. Use 'Refresh Display' to update the equipment list.",
+                    equipment_name
+                ))
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_equipment_delete_cancel(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("❌ Equipment deletion cancelled.")
                 .ephemeral(true),
         );
         interaction.create_response(&ctx.http, response).await?;
