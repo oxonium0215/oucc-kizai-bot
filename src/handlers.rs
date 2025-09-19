@@ -12,8 +12,8 @@ use tracing::{error, info};
 
 use crate::commands::SetupCommand;
 use crate::equipment::EquipmentRenderer;
-use crate::transfer_notifications::TransferNotificationService;
-use crate::transfer_notifications::TransferNotificationType;
+// use crate::transfer_notifications::TransferNotificationService;
+// use crate::transfer_notifications::TransferNotificationType;
 use crate::utils;
 
 // In-memory storage for reservation wizard state
@@ -129,15 +129,15 @@ struct ComponentInteractionRef {
 
 pub struct Handler {
     db: SqlitePool,
-    notification_service: TransferNotificationService,
+    // notification_service: TransferNotificationService,
 }
 
 impl Handler {
     pub fn new(db: SqlitePool) -> Self {
-        let notification_service = TransferNotificationService::new(db.clone());
-        Self { 
+        // let notification_service = TransferNotificationService::new(db.clone());
+        Self {
             db,
-            notification_service,
+            // notification_service,
         }
     }
 }
@@ -7372,6 +7372,7 @@ impl Handler {
         approved: bool,
         reason: Option<&str>,
     ) {
+        /*
         let notification = if approved {
             TransferNotificationType::Approved {
                 equipment_name: equipment_name.to_string(),
@@ -7382,7 +7383,11 @@ impl Handler {
                 reason: reason.unwrap_or("受信者によって拒否されました").to_string(),
             }
         };
+        */
 
+        // TODO: Implement transfer notification when transfer_notifications module is available
+
+        /*
         if let Err(e) = self.notification_service.send_notification(
             ctx,
             requester_id,
@@ -7393,6 +7398,7 @@ impl Handler {
         ).await {
             error!("Failed to send transfer outcome notification: {}", e);
         }
+        */
     }
 
     /// Handle transfer confirmation (for future use with scheduled transfers)
@@ -7501,6 +7507,7 @@ impl Handler {
         // Try to send DM with approval buttons (detailed message)
         let dm_sent = self.send_transfer_approval_dm(ctx, target_user_id, transfer_id.id, &approval_message).await;
 
+        /*
         // If detailed DM failed, try generic notification with fallback
         if !dm_sent {
             let notification = TransferNotificationType::RequestSent {
@@ -7520,6 +7527,9 @@ impl Handler {
                 error!("Failed to send transfer request fallback notification: {}", e);
             }
         }
+        */
+
+        // TODO: Implement transfer notification when transfer_notifications module is available
 
         // Respond to the original interaction
         let confirmation_message = if dm_sent {

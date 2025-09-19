@@ -10,8 +10,8 @@ use tracing::{error, info, warn};
 use crate::models::{DeliveryMethod, Job, ReminderKind};
 use crate::time::utc_to_jst_string;
 use crate::traits::DiscordApi;
-use crate::transfer_notifications::TransferNotificationService;
-use crate::transfer_notifications::TransferNotificationType;
+// use crate::transfer_notifications::TransferNotificationService;
+// use crate::transfer_notifications::TransferNotificationType;
 
 // Helper function to convert NaiveDateTime to DateTime<Utc>
 fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
@@ -21,25 +21,25 @@ fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 pub struct JobWorker {
     db: SqlitePool,
     discord_api: Option<Box<dyn DiscordApi>>,
-    notification_service: TransferNotificationService,
+    // notification_service: TransferNotificationService,
 }
 
 impl JobWorker {
     pub fn new(db: SqlitePool) -> Self {
-        let notification_service = TransferNotificationService::new(db.clone());
+        // let notification_service = TransferNotificationService::new(db.clone());
         Self {
             db,
             discord_api: None,
-            notification_service,
+            // notification_service,
         }
     }
 
     pub fn with_discord_api(db: SqlitePool, discord_api: Box<dyn DiscordApi>) -> Self {
-        let notification_service = TransferNotificationService::new(db.clone());
+        // let notification_service = TransferNotificationService::new(db.clone());
         Self {
             db,
             discord_api: Some(discord_api),
-            notification_service,
+            // notification_service,
         }
     }
 
@@ -334,11 +334,16 @@ impl JobWorker {
         .await?;
 
         if let Some(details) = equipment_details {
+            /*
             // Send timeout notification using the notification service
             let notification = TransferNotificationType::Expired {
                 equipment_name: details.equipment_name.clone(),
             };
+            */
 
+            // TODO: Implement timeout notification when transfer_notifications module is available
+
+            /*
             if let Some(discord_api) = &self.discord_api {
                 if let Err(e) = self.notification_service.send_notification_with_api(
                     discord_api.as_ref(),
@@ -353,6 +358,7 @@ impl JobWorker {
             } else {
                 warn!("No Discord API available for transfer timeout notification");
             }
+            */
         }
 
         info!("Successfully handled timeout for transfer {}", transfer.id);
