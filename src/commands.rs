@@ -193,6 +193,9 @@ impl SetupCommand {
 
         // Buttons row
         let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("setup_back_to_start")
+                .label("⬅️ Back to Start")
+                .style(ButtonStyle::Secondary),
             CreateButton::new("setup_roles_skip")
                 .label("⏭️ Skip")
                 .style(ButtonStyle::Secondary),
@@ -421,35 +424,72 @@ impl SetupCommand {
             ))
             .color(Colour::BLURPLE);
 
-        let select_menu = CreateSelectMenu::new(
-            "notification_preferences",
+        // Create separate select menus for each notification type to avoid conflicts
+        let dm_fallback_menu = CreateSelectMenu::new(
+            "notification_dm_fallback",
             CreateSelectMenuKind::String {
                 options: vec![
-                    CreateSelectMenuOption::new("DM Fallback: Enabled", "dm_fallback_true")
+                    CreateSelectMenuOption::new("Enabled", "dm_fallback_true")
                         .description("Send channel mentions when DMs fail")
                         .default_selection(true),
-                    CreateSelectMenuOption::new("DM Fallback: Disabled", "dm_fallback_false")
+                    CreateSelectMenuOption::new("Disabled", "dm_fallback_false")
                         .description("Only send DMs, no channel fallback"),
-                    CreateSelectMenuOption::new("Pre-Start: 5 minutes", "pre_start_5"),
-                    CreateSelectMenuOption::new("Pre-Start: 15 minutes", "pre_start_15")
-                        .default_selection(true),
-                    CreateSelectMenuOption::new("Pre-Start: 30 minutes", "pre_start_30"),
-                    CreateSelectMenuOption::new("Pre-End: 5 minutes", "pre_end_5"),
-                    CreateSelectMenuOption::new("Pre-End: 15 minutes", "pre_end_15")
-                        .default_selection(true),
-                    CreateSelectMenuOption::new("Pre-End: 30 minutes", "pre_end_30"),
-                    CreateSelectMenuOption::new("Overdue: Every 6 hours", "overdue_6h"),
-                    CreateSelectMenuOption::new("Overdue: Every 12 hours", "overdue_12h")
-                        .default_selection(true),
-                    CreateSelectMenuOption::new("Overdue: Every 24 hours", "overdue_24h"),
                 ],
             },
         )
-        .placeholder("Select notification preferences to modify")
-        .min_values(0)
-        .max_values(4);
+        .placeholder("DM Fallback Setting")
+        .min_values(1)
+        .max_values(1);
+
+        let pre_start_menu = CreateSelectMenu::new(
+            "notification_pre_start",
+            CreateSelectMenuKind::String {
+                options: vec![
+                    CreateSelectMenuOption::new("5 minutes", "pre_start_5"),
+                    CreateSelectMenuOption::new("15 minutes", "pre_start_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("30 minutes", "pre_start_30"),
+                ],
+            },
+        )
+        .placeholder("Pre-Start Reminder Time")
+        .min_values(1)
+        .max_values(1);
+
+        let pre_end_menu = CreateSelectMenu::new(
+            "notification_pre_end", 
+            CreateSelectMenuKind::String {
+                options: vec![
+                    CreateSelectMenuOption::new("5 minutes", "pre_end_5"),
+                    CreateSelectMenuOption::new("15 minutes", "pre_end_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("30 minutes", "pre_end_30"),
+                ],
+            },
+        )
+        .placeholder("Pre-End Reminder Time")
+        .min_values(1)
+        .max_values(1);
+
+        let overdue_menu = CreateSelectMenu::new(
+            "notification_overdue",
+            CreateSelectMenuKind::String {
+                options: vec![
+                    CreateSelectMenuOption::new("Every 6 hours", "overdue_6h"),
+                    CreateSelectMenuOption::new("Every 12 hours", "overdue_12h")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Every 24 hours", "overdue_24h"),
+                ],
+            },
+        )
+        .placeholder("Overdue Reminder Frequency")
+        .min_values(1)
+        .max_values(1);
 
         let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("setup_back_to_roles")
+                .label("⬅️ Back to Roles")
+                .style(ButtonStyle::Secondary),
             CreateButton::new("notification_next")
                 .label("➡️ Next")
                 .style(ButtonStyle::Primary),
@@ -458,7 +498,13 @@ impl SetupCommand {
                 .style(ButtonStyle::Danger),
         ]);
 
-        let components = vec![CreateActionRow::SelectMenu(select_menu), buttons];
+        let components = vec![
+            CreateActionRow::SelectMenu(dm_fallback_menu),
+            CreateActionRow::SelectMenu(pre_start_menu),
+            CreateActionRow::SelectMenu(pre_end_menu),
+            CreateActionRow::SelectMenu(overdue_menu),
+            buttons,
+        ];
 
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
@@ -767,5 +813,31 @@ impl SetupCommand {
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
+    }
+
+    pub async fn handle_back_to_start(
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        db: &SqlitePool,
+    ) -> Result<()> {
+        let user_id = interaction.user.id;
+
+        // Remove current state to reset wizard
+        {
+            let mut states = SETUP_STATES.lock().await;
+            states.remove(&user_id);
+        }
+
+        // Show the initial setup screen again
+        Self::handle_confirmation(ctx, interaction, db, false).await
+    }
+
+    pub async fn handle_back_to_roles(
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        db: &SqlitePool,
+    ) -> Result<()> {
+        // Show the role selection step again
+        Self::show_role_selection_step(ctx, interaction, db).await
     }
 }
