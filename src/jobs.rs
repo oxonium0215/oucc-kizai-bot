@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use crate::models::{DeliveryMethod, Job, ReminderKind};
 use crate::time::utc_to_jst_string;
 use crate::traits::DiscordApi;
+use crate::transfer_notifications::{TransferNotificationService, TransferNotificationType};
 
 // Helper function to convert NaiveDateTime to DateTime<Utc>
 fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
@@ -19,20 +20,25 @@ fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 pub struct JobWorker {
     db: SqlitePool,
     discord_api: Option<Box<dyn DiscordApi>>,
+    notification_service: TransferNotificationService,
 }
 
 impl JobWorker {
     pub fn new(db: SqlitePool) -> Self {
+        let notification_service = TransferNotificationService::new(db.clone());
         Self {
             db,
             discord_api: None,
+            notification_service,
         }
     }
 
     pub fn with_discord_api(db: SqlitePool, discord_api: Box<dyn DiscordApi>) -> Self {
+        let notification_service = TransferNotificationService::new(db.clone());
         Self {
             db,
             discord_api: Some(discord_api),
+            notification_service,
         }
     }
 
@@ -316,7 +322,7 @@ impl JobWorker {
 
         // Get equipment details for notification
         let equipment_details = sqlx::query!(
-            "SELECT e.name as equipment_name
+            "SELECT e.id as equipment_id, e.guild_id, e.name as equipment_name
              FROM transfer_requests tr
              JOIN reservations r ON tr.reservation_id = r.id
              JOIN equipment e ON r.equipment_id = e.id
@@ -327,25 +333,29 @@ impl JobWorker {
         .await?;
 
         if let Some(details) = equipment_details {
-            // Notify the original requester that the transfer timed out
-            self.send_timeout_notification(transfer.requested_by_user_id, &details.equipment_name).await;
+            // Send timeout notification using the notification service
+            let notification = TransferNotificationType::Expired {
+                equipment_name: details.equipment_name.clone(),
+            };
+
+            if let Some(discord_api) = &self.discord_api {
+                if let Err(e) = self.notification_service.send_notification_with_api(
+                    discord_api.as_ref(),
+                    transfer.requested_by_user_id,
+                    transfer.reservation_id,
+                    details.equipment_id,
+                    details.guild_id,
+                    notification,
+                ).await {
+                    error!("Failed to send transfer timeout notification: {}", e);
+                }
+            } else {
+                warn!("No Discord API available for transfer timeout notification");
+            }
         }
 
         info!("Successfully handled timeout for transfer {}", transfer.id);
         Ok(())
-    }
-
-    /// Send timeout notification to the transfer requester
-    async fn send_timeout_notification(&self, requester_id: i64, equipment_name: &str) {
-        // Since we don't have Discord context in the job worker, we'll log this
-        // In a full implementation, we would send this via the Discord API
-        info!(
-            "Transfer timeout notification needed for user {} regarding equipment '{}'",
-            requester_id, equipment_name
-        );
-        
-        // TODO: In a real implementation, this would send a DM notification:
-        // "⏰ 移譲依頼の期限切れ\n\n「{}」の予約移譲依頼が3時間以内に承認されなかったため、自動的にキャンセルされました。"
     }
 
     async fn process_job(&self, job: &Job) -> Result<()> {

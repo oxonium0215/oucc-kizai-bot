@@ -35,6 +35,7 @@ pub struct GuildBuilder {
     id: i64,
     reservation_channel_id: Option<i64>,
     admin_roles: Option<String>,
+    dm_fallback_enabled: Option<bool>,
 }
 
 impl GuildBuilder {
@@ -43,6 +44,7 @@ impl GuildBuilder {
             id,
             reservation_channel_id: None,
             admin_roles: None,
+            dm_fallback_enabled: None,
         }
     }
 
@@ -56,15 +58,21 @@ impl GuildBuilder {
         self
     }
 
+    pub fn with_dm_fallback_enabled(mut self, enabled: bool) -> Self {
+        self.dm_fallback_enabled = Some(enabled);
+        self
+    }
+
     pub async fn build(self, db: &SqlitePool) -> Result<DbGuild> {
         let now = Utc::now();
 
         sqlx::query!(
-            "INSERT INTO guilds (id, reservation_channel_id, admin_roles, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO guilds (id, reservation_channel_id, admin_roles, dm_fallback_channel_enabled, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?)",
             self.id,
             self.reservation_channel_id,
             self.admin_roles,
+            self.dm_fallback_enabled,
             now,
             now
         )
@@ -77,7 +85,7 @@ impl GuildBuilder {
             admin_roles: self.admin_roles,
             created_at: now,
             updated_at: now,
-            dm_fallback_channel_enabled: Some(true),
+            dm_fallback_channel_enabled: self.dm_fallback_enabled.or(Some(true)),
             overdue_repeat_hours: Some(12),
             overdue_max_count: Some(3),
             pre_start_minutes: Some(15),

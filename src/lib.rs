@@ -7,4 +7,5 @@ pub mod jobs;
 pub mod models;
 pub mod time;
 pub mod traits;
+pub mod transfer_notifications;
 pub mod utils;
