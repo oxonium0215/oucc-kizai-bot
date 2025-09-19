@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT tr.reservation_id, tr.from_user_id, tr.to_user_id, tr.requested_by_user_id, tr.note,\n                    r.equipment_id, r.start_time, r.end_time, r.location, r.status as reservation_status,\n                    e.name as equipment_name\n             FROM transfer_requests tr\n             JOIN reservations r ON tr.reservation_id = r.id\n             JOIN equipment e ON r.equipment_id = e.id\n             WHERE tr.id = ? AND tr.status = 'Pending'",
+  "describe": {
+    "columns": [
+      {
+        "name": "reservation_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "from_user_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "to_user_id",
+        "ordinal": 2,
+        "type_info": "Int64"
+      },
+      {
+        "name": "requested_by_user_id",
+        "ordinal": 3,
+        "type_info": "Int64"
+      },
+      {
+        "name": "note",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "equipment_id",
+        "ordinal": 5,
+        "type_info": "Int64"
+      },
+      {
+        "name": "start_time",
+        "ordinal": 6,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "end_time",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "location",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "reservation_status",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "equipment_name",
+        "ordinal": 10,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1c936373542218c967a753c04660ae14421e8892032cc3fe5ca77bb9e3bd8464"
+}

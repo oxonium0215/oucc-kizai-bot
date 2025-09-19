@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.id as equipment_id, e.guild_id, e.name as equipment_name\n             FROM transfer_requests tr\n             JOIN reservations r ON tr.reservation_id = r.id\n             JOIN equipment e ON r.equipment_id = e.id\n             WHERE tr.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "equipment_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "guild_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "equipment_name",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6eb0aedbaec8c43e63e020db127686c06f21b40fdb44087d1d051fadc44bd958"
+}

@@ -292,12 +292,12 @@ impl JobWorker {
                 requested_by_user_id: row.requested_by_user_id.unwrap_or(row.from_user_id),
                 execute_at_utc: row.execute_at_utc.map(naive_to_utc),
                 note: row.note,
-                expires_at: naive_to_utc(row.expires_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+                expires_at: naive_to_utc(row.expires_at),
                 status: row.status,
                 canceled_at_utc: row.canceled_at_utc.map(naive_to_utc),
                 canceled_by_user_id: row.canceled_by_user_id,
-                created_at: naive_to_utc(row.created_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
-                updated_at: naive_to_utc(row.updated_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+                created_at: naive_to_utc(row.created_at.unwrap_or(chrono::Utc::now().naive_utc())),
+                updated_at: naive_to_utc(row.updated_at.unwrap_or(chrono::Utc::now().naive_utc())),
             };
 
             if let Err(e) = self.handle_transfer_timeout(&transfer).await {
