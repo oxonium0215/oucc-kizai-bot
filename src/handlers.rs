@@ -1065,6 +1065,15 @@ impl Handler {
         ctx: &Context,
         interaction: &ComponentInteraction,
     ) -> Result<()> {
+        self.show_admin_roles(ctx, interaction, false).await
+    }
+
+    async fn show_admin_roles(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        is_update: bool,
+    ) -> Result<()> {
         // Check admin permissions
         if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
             let response = serenity::all::CreateInteractionResponse::Message(
@@ -1125,12 +1134,20 @@ impl Handler {
                 .style(ButtonStyle::Secondary),
         ]);
 
-        let response = serenity::all::CreateInteractionResponse::Message(
-            serenity::all::CreateInteractionResponseMessage::new()
-                .embed(embed)
-                .components(vec![buttons])
-                .ephemeral(true),
-        );
+        let response = if is_update {
+            serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![buttons]),
+            )
+        } else {
+            serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![buttons])
+                    .ephemeral(true),
+            )
+        };
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
@@ -1268,8 +1285,19 @@ impl Handler {
         ctx: &Context,
         interaction: &ComponentInteraction,
     ) -> Result<()> {
-        // Go back to the admin role management screen
-        self.handle_admin_roles(ctx, interaction).await
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Return to the overall management dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
     }
 
     async fn handle_admin_role_select_add(

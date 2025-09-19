@@ -621,8 +621,13 @@ impl SetupCommand {
             }
         };
 
-        // Re-render the notification preferences step with updated defaults
-        Self::show_notification_preferences_step(ctx, interaction, _db, &updated_state, &selected_roles).await
+        // Acknowledge the selection with a simple response instead of re-rendering
+        let response = CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .content("✅ Notification preferences updated. Click **Next** to continue or modify other settings."),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
     }
 
     pub async fn handle_notification_next(
