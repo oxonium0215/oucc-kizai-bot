@@ -5972,20 +5972,22 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        let session_id = get_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_time_today:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_today:{}", session_id))
                 .label("📅 Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_24h:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_24h:{}", session_id))
                 .label("🕐 Next 24h")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_7d:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_7d:{}", session_id))
                 .label("📊 Next 7 days")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_custom:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_custom:{}", session_id))
                 .label("⚙️ Custom")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_time_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_all:{}", session_id))
                 .label("🌐 All Time")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6017,17 +6019,19 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        let session_id = get_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_status_active:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_active:{}", session_id))
                 .label("🟢 Active")
                 .style(ButtonStyle::Success),
-            CreateButton::new(format!("mgmt_status_upcoming:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_upcoming:{}", session_id))
                 .label("🟡 Upcoming")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_returned:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_returned:{}", session_id))
                 .label("🔄 Returned Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_all:{}", session_id))
                 .label("📊 All Status")
                 .style(ButtonStyle::Primary),
         ]);
@@ -6057,11 +6061,19 @@ impl Handler {
             return Ok(());
         }
 
+        // Extract the full token from the custom_id
+        let full_token = if let Some(token) = extract_token_from_custom_id(&interaction.data.custom_id).await {
+            token
+        } else {
+            // Fallback to using interaction token if extraction fails
+            interaction.token.clone()
+        };
+
         // Reset filters to default
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            interaction.token.clone(),
+            full_token,
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;
@@ -6442,11 +6454,19 @@ impl Handler {
             TimeFilter::All
         };
 
+        // Extract the full token from the custom_id
+        let full_token = if let Some(token) = extract_token_from_custom_id(&interaction.data.custom_id).await {
+            token
+        } else {
+            // Fallback to using interaction token if extraction fails
+            interaction.token.clone()
+        };
+
         // Update filter state
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            interaction.token.clone(),
+            full_token,
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;
@@ -6487,11 +6507,19 @@ impl Handler {
             StatusFilter::All
         };
 
+        // Extract the full token from the custom_id
+        let full_token = if let Some(token) = extract_token_from_custom_id(&interaction.data.custom_id).await {
+            token
+        } else {
+            // Fallback to using interaction token if extraction fails
+            interaction.token.clone()
+        };
+
         // Update filter state
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            interaction.token.clone(),
+            full_token,
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;
