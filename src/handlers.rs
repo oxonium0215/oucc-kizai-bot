@@ -4,7 +4,7 @@ use serenity::all::ComponentInteractionDataKind;
 use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::{SqlitePool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -442,6 +442,8 @@ impl Handler {
             "notification_next" => {
                 SetupCommand::handle_notification_next(ctx, interaction, &self.db).await?
             }
+            "admin_role_select_add" => self.handle_admin_role_select_add(ctx, interaction).await?,
+            "admin_role_select_remove" => self.handle_admin_role_select_remove(ctx, interaction).await?,
             "overall_management" | "overall_mgmt_open" => {
                 self.handle_overall_management(ctx, interaction).await?
             }
@@ -449,6 +451,9 @@ impl Handler {
             "mgmt_add_location" => self.handle_add_location(ctx, interaction).await?,
             "mgmt_add_equipment" => self.handle_add_equipment(ctx, interaction).await?,
             "mgmt_admin_roles" => self.handle_admin_roles(ctx, interaction).await?,
+            "admin_role_add" => self.handle_admin_role_add(ctx, interaction).await?,
+            "admin_role_remove" => self.handle_admin_role_remove(ctx, interaction).await?,
+            "admin_role_back" => self.handle_admin_role_back(ctx, interaction).await?,
             "mgmt_refresh_display" => self.handle_refresh_display(ctx, interaction).await?,
             _ => {
                 // Check for dynamic reservation and equipment IDs (support both old and new format)
@@ -607,8 +612,8 @@ impl Handler {
                     self.handle_mgmt_export(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("mgmt_jump:") {
                     self.handle_mgmt_jump(ctx, interaction).await?
-                } else if interaction.data.custom_id.starts_with("mgmt_logs_open:") {
-                    self.handle_mgmt_logs_open(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_logs_interface:") {
+                    self.handle_mgmt_logs_interface(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("log_filter_time:") {
                     self.handle_log_filter_time(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("log_filter_equipment:") {
@@ -897,14 +902,8 @@ impl Handler {
             CreateButton::new(format!("mgmt_refresh:{}", short_session_id))
                 .label("🔄 Refresh Display")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_export:{}", short_session_id))
-                .label("📊 Export CSV")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_jump:{}", short_session_id))
-                .label("🔗 Jump to Equipment")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_logs_open:{}", short_session_id))
-                .label("📋 Operation Logs")
+            CreateButton::new(format!("mgmt_logs_interface:{}", short_session_id))
+                .label("📋 View Logs")
                 .style(ButtonStyle::Secondary),
         ]);
 
@@ -1077,11 +1076,350 @@ impl Handler {
             return Ok(());
         }
 
-        // For now, provide a placeholder message indicating this feature exists but is managed via /setup
+        // Get current admin roles from database
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+        
+        use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
+
+        let mut embed = CreateEmbed::new()
+            .title("👥 Admin Role Management")
+            .description("Manage Discord roles that can use administrative functions.")
+            .color(Colour::BLUE);
+
+        if admin_role_ids.is_empty() {
+            embed = embed.field("Current Admin Roles", "None (only Discord administrators)", false);
+        } else {
+            let role_mentions = admin_role_ids
+                .iter()
+                .map(|&role_id| format!("<@&{}>", role_id))
+                .collect::<Vec<_>>()
+                .join("\n");
+            embed = embed.field("Current Admin Roles", role_mentions, false);
+        }
+
+        embed = embed.field(
+            "Instructions",
+            "• **Add Role**: Select a role to add admin permissions\n• **Remove Role**: Remove admin permissions from a role\n• **Back**: Return to Overall Management",
+            false
+        );
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_add")
+                .label("➕ Add Admin Role")
+                .style(ButtonStyle::Success),
+            CreateButton::new("admin_role_remove")
+                .label("➖ Remove Admin Role")
+                .style(ButtonStyle::Danger),
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back to Management")
+                .style(ButtonStyle::Secondary),
+        ]);
+
         let response = serenity::all::CreateInteractionResponse::Message(
             serenity::all::CreateInteractionResponseMessage::new()
-                .content("👥 **Admin Role Management**\n\nAdmin roles are currently configured via the `/setup` command. This interface will be enhanced in a future update to allow direct management from this panel.\n\n**Current admin roles:** Configured via setup")
+                .embed(embed)
+                .components(vec![buttons])
                 .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_add(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateActionRow, CreateButton, ButtonStyle};
+
+        let role_select = CreateSelectMenu::new(
+            "admin_role_select_add",
+            CreateSelectMenuKind::Role {
+                default_roles: None,
+            },
+        )
+        .placeholder("Select a role to grant admin permissions")
+        .min_values(1)
+        .max_values(1);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("👥 **Add Admin Role**\n\nSelect a role to grant administrative permissions:")
+                .components(vec![
+                    CreateActionRow::SelectMenu(role_select),
+                    buttons,
+                ]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_remove(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        if admin_role_ids.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ **No Admin Roles to Remove**\n\nThere are currently no admin roles configured.")
+                    .components(vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new("admin_role_back")
+                            .label("⬅️ Back")
+                            .style(ButtonStyle::Secondary),
+                    ])]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, CreateActionRow, CreateButton, ButtonStyle};
+
+        let options: Vec<CreateSelectMenuOption> = admin_role_ids
+            .iter()
+            .map(|&role_id| {
+                CreateSelectMenuOption::new(
+                    format!("Role ID: {}", role_id),
+                    role_id.to_string()
+                )
+            })
+            .collect();
+
+        let role_select = CreateSelectMenu::new(
+            "admin_role_select_remove",
+            CreateSelectMenuKind::String { options },
+        )
+        .placeholder("Select a role to remove admin permissions")
+        .min_values(1)
+        .max_values(1);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("👥 **Remove Admin Role**\n\nSelect a role to remove administrative permissions:")
+                .components(vec![
+                    CreateActionRow::SelectMenu(role_select),
+                    buttons,
+                ]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_back(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Go back to the admin role management screen
+        self.handle_admin_roles(ctx, interaction).await
+    }
+
+    async fn handle_admin_role_select_add(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract selected role
+        let selected_role = if let ComponentInteractionDataKind::RoleSelect { values } = &interaction.data.kind {
+            if let Some(role_id) = values.first() {
+                role_id.get() as i64
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        };
+
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let mut admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        // Check if role is already added
+        if admin_role_ids.contains(&selected_role) {
+            use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content(format!("❌ **Role Already Added**\n\n<@&{}> already has admin permissions.", selected_role))
+                    .components(vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new("admin_role_back")
+                            .label("⬅️ Back")
+                            .style(ButtonStyle::Secondary),
+                    ])]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Add the role
+        admin_role_ids.push(selected_role);
+        let updated_json = serde_json::to_string(&admin_role_ids)?;
+
+        // Update database
+        sqlx::query("UPDATE guilds SET admin_roles = ? WHERE id = ?")
+            .bind(&updated_json)
+            .bind(guild_id)
+            .execute(&self.db)
+            .await?;
+
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(format!("✅ **Admin Role Added**\n\n<@&{}> now has administrative permissions.", selected_role))
+                .components(vec![CreateActionRow::Buttons(vec![
+                    CreateButton::new("admin_role_back")
+                        .label("⬅️ Back to Admin Roles")
+                        .style(ButtonStyle::Secondary),
+                ])]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_select_remove(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract selected role
+        let selected_role_str = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            if let Some(role_str) = values.first() {
+                role_str.clone()
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        };
+
+        let selected_role: i64 = selected_role_str.parse().unwrap_or(0);
+        if selected_role == 0 {
+            return Ok(());
+        }
+
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let mut admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        // Remove the role
+        admin_role_ids.retain(|&id| id != selected_role);
+        let updated_json = serde_json::to_string(&admin_role_ids)?;
+
+        // Update database
+        sqlx::query("UPDATE guilds SET admin_roles = ? WHERE id = ?")
+            .bind(&updated_json)
+            .bind(guild_id)
+            .execute(&self.db)
+            .await?;
+
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(format!("✅ **Admin Role Removed**\n\n<@&{}> no longer has administrative permissions.", selected_role))
+                .components(vec![CreateActionRow::Buttons(vec![
+                    CreateButton::new("admin_role_back")
+                        .label("⬅️ Back to Admin Roles")
+                        .style(ButtonStyle::Secondary),
+                ])]),
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
@@ -6799,6 +7137,38 @@ impl Handler {
     }
 
     /// Handle opening operation log viewer
+    async fn handle_mgmt_logs_interface(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to view operation logs.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Initialize log viewer state for this user session
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            states.insert(state_key.clone(), LogViewerState::default());
+        }
+
+        // Show the operation log viewer interface
+        self.show_operation_log_viewer(ctx, interaction, false)
+            .await
+    }
+
     async fn handle_mgmt_logs_open(
         &self,
         ctx: &Context,
