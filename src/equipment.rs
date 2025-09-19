@@ -359,11 +359,22 @@ impl EquipmentRenderer {
             }
         }
 
-        if buttons.is_empty() {
-            Ok(vec![])
-        } else {
-            Ok(vec![CreateActionRow::Buttons(buttons)])
+        let mut action_rows = Vec::new();
+
+        // First row: User action buttons 
+        if !buttons.is_empty() {
+            action_rows.push(CreateActionRow::Buttons(buttons));
         }
+
+        // Second row: Admin settings button (always visible, permission checked in handler)
+        let admin_buttons = vec![
+            CreateButton::new(format!("eq_settings_{}", equipment.id))
+                .label("⚙️ This Equipment's Settings")
+                .style(ButtonStyle::Secondary),
+        ];
+        action_rows.push(CreateActionRow::Buttons(admin_buttons));
+
+        Ok(action_rows)
     }
 
     /// Render or update all equipment embeds in the channel using minimal edits
