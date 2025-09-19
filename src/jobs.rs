@@ -381,6 +381,7 @@ impl JobWorker {
             "reminder" => self.process_reminder(job).await?,
             "transfer_timeout" => self.process_transfer_timeout(job).await?,
             "retry_dm" => self.process_retry_dm(job).await?,
+            "session_cleanup" => self.process_session_cleanup(job).await?,
             _ => {
                 warn!("Unknown job type: {}", job.job_type);
             }
@@ -611,6 +612,23 @@ impl JobWorker {
         Ok(())
     }
 
+    async fn process_session_cleanup(&self, _job: &Job) -> Result<()> {
+        // Clean up expired sessions
+        if let Err(e) = crate::handlers::Handler::cleanup_expired_sessions() {
+            error!("Failed to clean up expired sessions: {}", e);
+            return Err(e);
+        }
+
+        // Schedule the next cleanup job
+        if let Err(e) = Self::schedule_session_cleanup_job(&self.db).await {
+            error!("Failed to schedule next session cleanup job: {}", e);
+            return Err(e);
+        }
+
+        info!("Session cleanup completed successfully");
+        Ok(())
+    }
+
     async fn mark_job_failed(&self, job: &Job) -> Result<()> {
         let new_attempts = job.attempts + 1;
 
@@ -761,6 +779,24 @@ impl JobWorker {
             "Cancelled future reminders for reservation {}",
             reservation_id
         );
+        Ok(())
+    }
+
+    /// Schedule session cleanup job to run periodically
+    pub async fn schedule_session_cleanup_job(db: &SqlitePool) -> Result<()> {
+        use crate::constants::Constants;
+        
+        let execute_at = Utc::now() + chrono::Duration::minutes(Constants::SESSION_CLEANUP_INTERVAL_MINUTES);
+
+        sqlx::query!(
+            "INSERT INTO jobs (job_type, scheduled_for, payload, status, created_at, updated_at)
+             VALUES ('session_cleanup', ?, '{}', 'Pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            execute_at
+        )
+        .execute(db)
+        .await?;
+
+        info!("Scheduled session cleanup job for {}", execute_at.format("%Y-%m-%d %H:%M:%S UTC"));
         Ok(())
     }
 }

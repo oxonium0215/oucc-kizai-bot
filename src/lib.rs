@@ -1,5 +1,6 @@
 // Library interface for testing
 pub mod commands;
+pub mod constants;
 pub mod database;
 pub mod equipment;
 pub mod handlers;

@@ -1,9 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use oucc_kizai_bot::models::{
-    Equipment, Guild as DbGuild, Job, Location, ManagedMessage, Reservation, Tag,
+    Equipment, Guild as DbGuild, Location, Reservation, Tag,
 };
-use oucc_kizai_bot::{database, time::*, traits::*};
+use oucc_kizai_bot::{database, traits::*};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
