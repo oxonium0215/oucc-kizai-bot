@@ -448,6 +448,7 @@ impl Handler {
             "mgmt_add_tag" => self.handle_add_tag(ctx, interaction).await?,
             "mgmt_add_location" => self.handle_add_location(ctx, interaction).await?,
             "mgmt_add_equipment" => self.handle_add_equipment(ctx, interaction).await?,
+            "mgmt_admin_roles" => self.handle_admin_roles(ctx, interaction).await?,
             "mgmt_refresh_display" => self.handle_refresh_display(ctx, interaction).await?,
             _ => {
                 // Check for dynamic reservation and equipment IDs (support both old and new format)
@@ -875,7 +876,23 @@ impl Handler {
             None
         };
 
-        // Create action buttons
+        // Create action buttons - first row: core management functions
+        let management_row = CreateActionRow::Buttons(vec![
+            CreateButton::new("mgmt_add_equipment")
+                .label("➕ Add Equipment")
+                .style(ButtonStyle::Success),
+            CreateButton::new("mgmt_add_tag")
+                .label("🏷️ Manage Tags")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_add_location")
+                .label("📍 Manage Locations")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_admin_roles")
+                .label("👥 Set Admin Roles")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        // Create action buttons - second row: utility functions
         let action_row = CreateActionRow::Buttons(vec![
             CreateButton::new(format!("mgmt_refresh:{}", short_session_id))
                 .label("🔄 Refresh Display")
@@ -901,7 +918,10 @@ impl Handler {
             components.push(pagination);
         }
 
-        // Finally add main action row
+        // Add management functions row
+        components.push(management_row);
+
+        // Finally add utility action row
         components.push(action_row);
 
         if is_update {
@@ -1037,6 +1057,32 @@ impl Handler {
         ]);
 
         let response = serenity::all::CreateInteractionResponse::Modal(modal);
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_roles(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // For now, provide a placeholder message indicating this feature exists but is managed via /setup
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("👥 **Admin Role Management**\n\nAdmin roles are currently configured via the `/setup` command. This interface will be enhanced in a future update to allow direct management from this panel.\n\n**Current admin roles:** Configured via setup")
+                .ephemeral(true),
+        );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
     }
