@@ -133,7 +133,7 @@ This document tracks compliance with all normative requirements from `specificat
 | Setup wizard state management | 0. Interactive Format | commands.rs:SETUP_STATES | ✅ | In-memory state with cleanup |
 | Management session state | Management State | handlers.rs:MANAGEMENT_STATES | ✅ | Filter and pagination state |
 | Log viewer session state | Log Viewer State | handlers.rs:LOG_VIEWER_STATES | ✅ | Filter and pagination state |
-| Session expiration and cleanup | Session Cleanup | Session state removal | ⚠️ | **NEEDS**: Automatic session cleanup job |
+| Session expiration and cleanup | Session Cleanup | jobs.rs:process_session_cleanup + handlers.rs:cleanup_expired_sessions | 🔧 | **Added**: Automatic cleanup every 30 minutes, 2-hour expiry |
 | Ephemeral message consistency | Ephemeral Interface | All interaction handlers | ✅ | Consistent ephemeral response pattern |
 
 ---
@@ -189,18 +189,16 @@ This document tracks compliance with all normative requirements from `specificat
 ## Summary
 
 **Total Requirements Identified**: 67
-- ✅ **Implemented**: 55 (82.1%)
-- ⚠️ **Needs Verification**: 10 (14.9%)
+- ✅ **Implemented**: 56 (83.6%)
+- ⚠️ **Needs Verification**: 9 (13.4%)
 - ❌ **Missing**: 2 (3.0%)
 
 ### Priority Issues to Address:
-1. **Add automatic session cleanup job** (Section I)
-2. **Add comprehensive concurrency/race condition tests** (Section M)
-3. **Verify complete log action coverage** (Section F)
-4. **Improve CSV format to use proper RFC 4180 quoting** (Section J - Optional enhancement)
+1. **Add comprehensive concurrency/race condition tests** (Section M)
+2. **Verify complete log action coverage** (Section F)
+3. **Improve CSV format to use proper RFC 4180 quoting** (Section J - Optional enhancement)
 
 ### Testing Gaps:
 - Property-based testing for conflict detection
 - Concurrency simulation tests
-- Session cleanup testing
 - Complete log action coverage validation

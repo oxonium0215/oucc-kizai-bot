@@ -37,6 +37,10 @@ impl Constants {
     pub const RETURN_CORRECTION_WINDOW_HOURS: i64 = 1;
     pub const NEXT_RESERVATION_BUFFER_MINUTES: i64 = 15;
     pub const PRE_END_NOTIFICATION_MINUTES: i64 = 15;
+    
+    // Session cleanup constants
+    pub const SESSION_CLEANUP_INTERVAL_MINUTES: i64 = 30; // How often to run cleanup
+    pub const SESSION_EXPIRY_HOURS: i64 = 2; // How long sessions stay valid
 
     // Reservation status
     pub const STATUS_CONFIRMED: &'static str = "Confirmed";

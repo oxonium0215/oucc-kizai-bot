@@ -28,6 +28,7 @@ struct ReservationWizardState {
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
     location: Option<String>,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +47,7 @@ pub struct ManagementState {
     status_filter: StatusFilter,
     page: usize,
     items_per_page: usize,
+    created_at: DateTime<Utc>,
 }
 
 // Operation Log Viewer state
@@ -56,6 +58,7 @@ pub struct LogViewerState {
     action_filter: Option<String>,      // Action type filter, None means all
     page: usize,
     items_per_page: usize,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +101,7 @@ impl Default for ManagementState {
             status_filter: StatusFilter::All,
             page: 0,
             items_per_page: Constants::DEFAULT_MANAGEMENT_PAGE_SIZE,
+            created_at: Utc::now(),
         }
     }
 }
@@ -110,6 +114,7 @@ impl Default for LogViewerState {
             action_filter: None,
             page: 0,
             items_per_page: Constants::DEFAULT_LOG_PAGE_SIZE,
+            created_at: Utc::now(),
         }
     }
 }
@@ -1497,6 +1502,7 @@ impl Handler {
             start_time: None,
             end_time: None,
             location: None,
+            created_at: Utc::now(),
         };
 
         // Store wizard state using user_id and interaction token as key
@@ -8146,5 +8152,51 @@ impl Handler {
         }
 
         CreateActionRow::Buttons(buttons)
+    }
+
+    /// Clean up expired sessions
+    pub fn cleanup_expired_sessions() -> Result<()> {
+        use crate::constants::Constants;
+        
+        let expiry_threshold = Utc::now() - chrono::Duration::hours(Constants::SESSION_EXPIRY_HOURS);
+
+        // Clean up reservation wizard states
+        tokio::spawn(async move {
+            let mut states = RESERVATION_WIZARD_STATES.lock().await;
+            let initial_count = states.len();
+            states.retain(|_, state| state.created_at > expiry_threshold);
+            let cleaned_wizard = initial_count - states.len();
+            
+            if cleaned_wizard > 0 {
+                tracing::info!("Cleaned up {} expired reservation wizard sessions", cleaned_wizard);
+            }
+        });
+
+        // Clean up management states
+        tokio::spawn(async move {
+            let mut states = MANAGEMENT_STATES.lock().await;
+            let initial_count = states.len();
+            states.retain(|_, state| state.created_at > expiry_threshold);
+            let cleaned_mgmt = initial_count - states.len();
+            
+            if cleaned_mgmt > 0 {
+                tracing::info!("Cleaned up {} expired management sessions", cleaned_mgmt);
+            }
+        });
+
+        // Clean up log viewer states
+        tokio::spawn(async move {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            let initial_count = states.len();
+            states.retain(|_, state| state.created_at > expiry_threshold);
+            let cleaned_log = initial_count - states.len();
+            
+            if cleaned_log > 0 {
+                tracing::info!("Cleaned up {} expired log viewer sessions", cleaned_log);
+            }
+        });
+
+        tracing::info!("Session cleanup completed, checked states older than {}", expiry_threshold.format("%Y-%m-%d %H:%M:%S UTC"));
+        Ok(())
     }
 }

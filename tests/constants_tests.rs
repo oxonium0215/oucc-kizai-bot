@@ -69,6 +69,10 @@ fn test_time_constants() {
     assert_eq!(Constants::RETURN_CORRECTION_WINDOW_HOURS, 1);
     assert_eq!(Constants::NEXT_RESERVATION_BUFFER_MINUTES, 15);
     assert_eq!(Constants::PRE_END_NOTIFICATION_MINUTES, 15);
+    
+    // Test session cleanup constants
+    assert_eq!(Constants::SESSION_CLEANUP_INTERVAL_MINUTES, 30);
+    assert_eq!(Constants::SESSION_EXPIRY_HOURS, 2);
 }
 
 /// Test message format constants
