@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id FROM transfer_requests WHERE reservation_id = ? AND status = 'Pending'",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f88ab7d87868088c972a3c7c5ed74ca1f52248f08899231f360257ddaaa841fb"
+}

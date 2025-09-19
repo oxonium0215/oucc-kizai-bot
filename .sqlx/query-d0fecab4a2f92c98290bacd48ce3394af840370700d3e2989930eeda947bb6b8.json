@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE transfer_requests SET status = 'Denied', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d0fecab4a2f92c98290bacd48ce3394af840370700d3e2989930eeda947bb6b8"
+}

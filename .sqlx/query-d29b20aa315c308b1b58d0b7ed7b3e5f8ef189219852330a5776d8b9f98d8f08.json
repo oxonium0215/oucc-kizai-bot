@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT reservation_channel_id, dm_fallback_channel_enabled FROM guilds WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "reservation_channel_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "dm_fallback_channel_enabled",
+        "ordinal": 1,
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "d29b20aa315c308b1b58d0b7ed7b3e5f8ef189219852330a5776d8b9f98d8f08"
+}
