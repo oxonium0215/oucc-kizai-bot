@@ -11,7 +11,9 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use crate::commands::SetupCommand;
+use crate::constants::Constants;
 use crate::equipment::EquipmentRenderer;
+use crate::models::Equipment;
 // use crate::transfer_notifications::TransferNotificationService;
 // use crate::transfer_notifications::TransferNotificationType;
 use crate::utils;
@@ -95,7 +97,7 @@ impl Default for ManagementState {
             time_filter: TimeFilter::All,
             status_filter: StatusFilter::All,
             page: 0,
-            items_per_page: 10,
+            items_per_page: Constants::DEFAULT_MANAGEMENT_PAGE_SIZE,
         }
     }
 }
@@ -107,7 +109,7 @@ impl Default for LogViewerState {
             equipment_filter: None,
             action_filter: None,
             page: 0,
-            items_per_page: 15,
+            items_per_page: Constants::DEFAULT_LOG_PAGE_SIZE,
         }
     }
 }
@@ -1930,10 +1932,66 @@ impl Handler {
             return Ok(());
         }
 
-        // TODO: Implement operation log viewer functionality
+        // Extract equipment ID from custom_id
+        let equipment_id: i64 = interaction.data.custom_id
+            .strip_prefix("eq_view_log_")
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| anyhow::anyhow!("Invalid equipment ID in custom_id"))?;
+
+        // Get equipment details
+        let equipment_row = sqlx::query!(
+            "SELECT id, guild_id, tag_id, name, status, current_location, 
+                    unavailable_reason, default_return_location, message_id, 
+                    created_at, updated_at 
+             FROM equipment WHERE id = ?",
+            equipment_id
+        )
+        .fetch_one(&self.db)
+        .await?;
+
+        let equipment = Equipment {
+            id: equipment_row.id,
+            guild_id: equipment_row.guild_id,
+            tag_id: equipment_row.tag_id,
+            name: equipment_row.name,
+            status: equipment_row.status,
+            current_location: equipment_row.current_location,
+            unavailable_reason: equipment_row.unavailable_reason,
+            default_return_location: equipment_row.default_return_location,
+            message_id: equipment_row.message_id,
+            created_at: equipment_row.created_at.map(crate::time::naive_to_utc).unwrap_or_else(Utc::now),
+            updated_at: equipment_row.updated_at.map(crate::time::naive_to_utc).unwrap_or_else(Utc::now),
+        };
+
+        // Initialize log viewer state for this equipment
+        let mut state = LogViewerState::default();
+        state.equipment_filter = Some(vec![equipment_id]);
+
+        // Get logs for this equipment
+        let logs = self.get_filtered_operation_logs(equipment.guild_id, &state).await?;
+
+        // Store state
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            let state_key = (interaction.guild_id.unwrap(), interaction.user.id, format!("eq_{}", equipment_id));
+            states.insert(state_key, state);
+        }
+
+        // Create embed showing logs
+        let embed = self.create_equipment_log_embed(&equipment, &logs, 0).await?;
+
+        // Create navigation buttons if there are logs
+        let components = if logs.is_empty() {
+            vec![]
+        } else {
+            let buttons = self.create_equipment_log_buttons(equipment_id, &logs, 0);
+            vec![buttons]
+        };
+
         let response = serenity::all::CreateInteractionResponse::Message(
             serenity::all::CreateInteractionResponseMessage::new()
-                .content("🚧 Operation log viewer functionality coming soon!")
+                .embed(embed)
+                .components(components)
                 .ephemeral(true),
         );
         interaction.create_response(&ctx.http, response).await?;
@@ -6826,112 +6884,103 @@ impl Handler {
         guild_id: i64,
         state: &LogViewerState,
     ) -> Result<Vec<crate::models::EquipmentLog>> {
-        // Build time filter clause
-        let (time_where, time_params) = match &state.time_filter {
+        // Build base query
+        let mut query = "
+            SELECT el.id, el.equipment_id, el.user_id, el.action, el.location, 
+                   el.previous_status, el.new_status, el.notes, el.timestamp
+            FROM equipment_logs el
+            JOIN equipment e ON el.equipment_id = e.id
+            WHERE e.guild_id = ?
+        ".to_string();
+
+        let mut params: Vec<Box<dyn sqlx::Encode<'_, sqlx::Sqlite> + Send>> = vec![Box::new(guild_id)];
+
+        // Add time filter
+        match &state.time_filter {
             LogTimeFilter::Today => {
                 let today_start = chrono::Utc::now()
                     .date_naive()
                     .and_hms_opt(0, 0, 0)
                     .unwrap();
                 let tomorrow_start = today_start + chrono::Duration::days(1);
-                (
-                    "AND el.timestamp >= ? AND el.timestamp < ?",
-                    Some((today_start, tomorrow_start)),
-                )
+                query.push_str(" AND el.timestamp >= ? AND el.timestamp < ?");
+                params.push(Box::new(today_start));
+                params.push(Box::new(tomorrow_start));
             }
             LogTimeFilter::Last7Days => {
                 let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
-                ("AND el.timestamp >= ?", Some((week_ago.naive_utc(), chrono::NaiveDateTime::default())))
+                query.push_str(" AND el.timestamp >= ?");
+                params.push(Box::new(week_ago.naive_utc()));
             }
             LogTimeFilter::Last30Days => {
                 let month_ago = chrono::Utc::now() - chrono::Duration::days(30);
-                ("AND el.timestamp >= ?", Some((month_ago.naive_utc(), chrono::NaiveDateTime::default())))
+                query.push_str(" AND el.timestamp >= ?");
+                params.push(Box::new(month_ago.naive_utc()));
             }
             LogTimeFilter::Custom { start_utc, end_utc } => {
-                (
-                    "AND el.timestamp >= ? AND el.timestamp <= ?",
-                    Some((start_utc.naive_utc(), end_utc.naive_utc())),
-                )
+                query.push_str(" AND el.timestamp >= ? AND el.timestamp <= ?");
+                params.push(Box::new(start_utc.naive_utc()));
+                params.push(Box::new(end_utc.naive_utc()));
             }
-            LogTimeFilter::All => ("", None),
-        };
+            LogTimeFilter::All => {}
+        }
 
-        // Build equipment filter clause
-        let equipment_where = if let Some(ref eq_ids) = state.equipment_filter {
+        // Add equipment filter
+        if let Some(ref eq_ids) = state.equipment_filter {
             if !eq_ids.is_empty() {
-                format!("AND e.id IN ({})", eq_ids.iter().map(|_| "?").collect::<Vec<_>>().join(","))
-            } else {
-                String::new()
+                query.push_str(&format!(" AND e.id IN ({})", 
+                    eq_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")));
+                for eq_id in eq_ids {
+                    params.push(Box::new(*eq_id));
+                }
             }
-        } else {
-            String::new()
-        };
+        }
 
-        // Build action filter clause
-        let action_where = if let Some(ref action) = state.action_filter {
-            "AND el.action = ?"
-        } else {
-            ""
-        };
+        // Add action filter
+        if let Some(ref action) = state.action_filter {
+            query.push_str(" AND el.action = ?");
+            params.push(Box::new(action.clone()));
+        }
 
-        // For now, use a simple query - in production you'd want proper dynamic query building
-        // Temporarily commented out due to missing sqlx cache entry - will be implemented in per-equipment settings
-        let logs: Vec<sqlx::sqlite::SqliteRow> = Vec::new(); // TODO: Implement proper query when working on per-equipment log viewer
+        // Add ordering and pagination
+        query.push_str(" ORDER BY el.timestamp DESC LIMIT ? OFFSET ?");
+        params.push(Box::new(state.items_per_page as i64));
+        params.push(Box::new((state.page * state.items_per_page) as i64));
 
-        // Convert to proper EquipmentLog structs - temporarily return empty list
-        let mut logs: Vec<crate::models::EquipmentLog> = Vec::new(); // Will be properly implemented when we add per-equipment log viewer
+        // For now, return a simpler result using direct query
+        let limit = state.items_per_page as i64;
+        let offset = (state.page * state.items_per_page) as i64;
+        
+        let log_rows = sqlx::query!(
+            "
+            SELECT el.id, el.equipment_id, el.user_id, el.action, el.location, 
+                   el.previous_status, el.new_status, el.notes, el.timestamp
+            FROM equipment_logs el
+            JOIN equipment e ON el.equipment_id = e.id
+            WHERE e.guild_id = ?
+            ORDER BY el.timestamp DESC
+            LIMIT ? OFFSET ?
+            ",
+            guild_id,
+            limit,
+            offset
+        )
+        .fetch_all(&self.db)
+        .await?;
 
-        // Apply filters in memory (not optimal for large datasets, but simple for now)
-        logs = logs
-            .into_iter()
-            .filter(|log| {
-                // Apply time filter
-                let time_match = match &state.time_filter {
-                    LogTimeFilter::Today => {
-                        let today_start = chrono::Utc::now()
-                            .date_naive()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap();
-                        let tomorrow_start = today_start + chrono::Duration::days(1);
-                        let today_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_start, Utc);
-                        let tomorrow_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(tomorrow_start, Utc);
-                        log.timestamp >= today_start_utc && log.timestamp < tomorrow_start_utc
-                    }
-                    LogTimeFilter::Last7Days => {
-                        let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
-                        log.timestamp >= week_ago
-                    }
-                    LogTimeFilter::Last30Days => {
-                        let month_ago = chrono::Utc::now() - chrono::Duration::days(30);
-                        log.timestamp >= month_ago
-                    }
-                    LogTimeFilter::Custom { start_utc, end_utc } => {
-                        log.timestamp >= *start_utc && log.timestamp <= *end_utc
-                    }
-                    LogTimeFilter::All => true,
-                };
-
-                if !time_match {
-                    return false;
-                }
-
-                // Apply equipment filter
-                if let Some(ref eq_ids) = state.equipment_filter {
-                    if !eq_ids.is_empty() && !eq_ids.contains(&log.equipment_id) {
-                        return false;
-                    }
-                }
-
-                // Apply action filter
-                if let Some(ref action) = state.action_filter {
-                    if log.action != *action {
-                        return false;
-                    }
-                }
-
-                true
-            })
-            .collect();
+        let logs = log_rows.into_iter().map(|row| {
+            crate::models::EquipmentLog {
+                id: row.id,
+                equipment_id: row.equipment_id,
+                user_id: row.user_id,
+                action: row.action,
+                location: row.location,
+                previous_status: row.previous_status,
+                new_status: row.new_status,
+                notes: row.notes,
+                timestamp: row.timestamp.map(crate::time::naive_to_utc).unwrap_or_else(Utc::now),
+            }
+        }).collect();
 
         Ok(logs)
     }
@@ -7992,5 +8041,110 @@ impl Handler {
             }
         }
         Ok(())
+    }
+
+    /// Create embed for equipment operation logs
+    async fn create_equipment_log_embed(
+        &self,
+        equipment: &Equipment,
+        logs: &[crate::models::EquipmentLog],
+        page: usize,
+    ) -> Result<serenity::all::CreateEmbed> {
+        use serenity::all::{CreateEmbed, Colour};
+
+        let mut embed = CreateEmbed::new()
+            .title(format!("📋 Operation Log - {}", equipment.name))
+            .color(Colour::BLUE);
+
+        if logs.is_empty() {
+            embed = embed.description("No operation logs found for this equipment.");
+        } else {
+            let mut description = String::new();
+            for (i, log) in logs.iter().enumerate() {
+                if i >= 10 { break; } // Limit to 10 entries per page
+                
+                let timestamp = crate::time::utc_to_jst_string(log.timestamp);
+                let user_mention = format!("<@{}>", log.user_id);
+                
+                let action_emoji = match log.action.as_str() {
+                    "reserve" => "📅",
+                    "return" => "↩️",
+                    "cancel" => "❌",
+                    "transfer" => "🔄",
+                    "edit" => "✏️",
+                    "force_state" => "⚠️",
+                    _ => "📝",
+                };
+
+                description.push_str(&format!(
+                    "{} **{}** {}\n**Time:** {}\n**User:** {}\n",
+                    action_emoji, log.action, 
+                    log.notes.as_deref().unwrap_or(""),
+                    timestamp, user_mention
+                ));
+
+                if let Some(location) = &log.location {
+                    description.push_str(&format!("**Location:** {}\n", location));
+                }
+
+                if let Some(prev_status) = &log.previous_status {
+                    if let Some(new_status) = &log.new_status {
+                        description.push_str(&format!(
+                            "**Status:** {} → {}\n", prev_status, new_status
+                        ));
+                    }
+                }
+
+                description.push('\n');
+            }
+            embed = embed.description(description);
+        }
+
+        embed = embed.footer(serenity::all::CreateEmbedFooter::new(
+            format!("Page {} • {} total logs", page + 1, logs.len())
+        ));
+
+        Ok(embed)
+    }
+
+    /// Create navigation buttons for equipment log viewer
+    fn create_equipment_log_buttons(
+        &self,
+        equipment_id: i64,
+        logs: &[crate::models::EquipmentLog],
+        page: usize,
+    ) -> serenity::all::CreateActionRow {
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+
+        let items_per_page = 10;
+        let total_pages = (logs.len() + items_per_page - 1) / items_per_page;
+        let mut buttons = Vec::new();
+
+        // Previous page button
+        if page > 0 {
+            buttons.push(
+                CreateButton::new(format!("eq_log_prev_{}", equipment_id))
+                    .label("⬅️ Previous")
+                    .style(ButtonStyle::Secondary)
+            );
+        }
+
+        // Close button
+        buttons.push(
+            CreateButton::new(format!("eq_log_close_{}", equipment_id))
+                .label("❌ Close")
+                .style(ButtonStyle::Danger)
+        );
+
+        // Next page button
+        if page + 1 < total_pages {
+            buttons.push(
+                CreateButton::new(format!("eq_log_next_{}", equipment_id))
+                    .label("Next ➡️")
+                    .style(ButtonStyle::Secondary)
+            );
+        }
+
+        CreateActionRow::Buttons(buttons)
     }
 }
