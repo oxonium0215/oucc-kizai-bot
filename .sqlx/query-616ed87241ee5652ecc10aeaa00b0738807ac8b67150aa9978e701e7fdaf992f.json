@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, guild_id, tag_id, name, status, current_location, \n                    unavailable_reason, default_return_location, message_id, \n                    created_at, updated_at \n             FROM equipment WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "guild_id",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "tag_id",
+        "ordinal": 2,
+        "type_info": "Int64"
+      },
+      {
+        "name": "name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "current_location",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "unavailable_reason",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "default_return_location",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "message_id",
+        "ordinal": 8,
+        "type_info": "Int64"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "616ed87241ee5652ecc10aeaa00b0738807ac8b67150aa9978e701e7fdaf992f"
+}
