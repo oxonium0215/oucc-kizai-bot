@@ -6121,7 +6121,7 @@ impl Handler {
     }
 
     /// Get filtered operation logs
-    async fn get_filtered_operation_logs(
+    pub async fn get_filtered_operation_logs(
         &self,
         guild_id: i64,
         state: &LogViewerState,
