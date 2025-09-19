@@ -1546,7 +1546,12 @@ impl Handler {
                 // ActionRowComponent is an enum, match on it properly
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
                     match input_text.custom_id.as_str() {
-                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "name" => {
+                            name = input_text.value.clone().unwrap_or_default();
+                            if name.is_empty() {
+                                error!("Tag name field is empty or None. Value field: {:?}", input_text.value);
+                            }
+                        },
                         "sort_order" => {
                             sort_order_str = input_text.value.clone().unwrap_or_default()
                         }
@@ -1555,6 +1560,9 @@ impl Handler {
                 }
             }
         }
+
+        // Debug logging for validation
+        error!("Tag modal validation - name: '{}', sort_order: '{}'", name, sort_order_str);
 
         // Validate inputs
         if name.is_empty() {
@@ -1625,10 +1633,16 @@ impl Handler {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
                     if input_text.custom_id == "name" {
                         name = input_text.value.clone().unwrap_or_default();
+                        if name.is_empty() {
+                            error!("Location name field is empty or None. Value field: {:?}", input_text.value);
+                        }
                     }
                 }
             }
         }
+
+        // Debug logging for validation
+        error!("Location modal validation - name: '{}'", name);
 
         // Validate inputs
         if name.is_empty() {
@@ -1686,7 +1700,13 @@ impl Handler {
             for component in &row.components {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
                     match input_text.custom_id.as_str() {
-                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "name" => {
+                            name = input_text.value.clone().unwrap_or_default();
+                            if name.is_empty() {
+                                // Check if value field is None
+                                error!("Equipment name field is empty or None. Value field: {:?}", input_text.value);
+                            }
+                        },
                         "tag_name" => {
                             if let Some(value) = &input_text.value {
                                 if !value.is_empty() {
@@ -1706,6 +1726,9 @@ impl Handler {
                 }
             }
         }
+
+        // Debug logging for validation
+        error!("Equipment modal validation - name: '{}', tag_name: {:?}, location: {:?}", name, tag_name, location);
 
         // Validate inputs
         if name.is_empty() {

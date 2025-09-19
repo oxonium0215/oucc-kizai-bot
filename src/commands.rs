@@ -379,6 +379,9 @@ impl SetupCommand {
         state: &SetupWizardState,
         selected_roles: &[RoleId],
     ) -> Result<()> {
+        // Debug logging to understand state values
+        error!("Setup state debug - pre_start: {}, pre_end: {}, overdue: {}, dm_fallback: {}", 
+               state.pre_start_minutes, state.pre_end_minutes, state.overdue_repeat_hours, state.dm_fallback_enabled);
         // Update state with selected roles and initialize notification preferences
         {
             let mut states = SETUP_STATES.lock().await;
