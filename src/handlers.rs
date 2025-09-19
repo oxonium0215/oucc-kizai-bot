@@ -2459,6 +2459,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let embed = CreateEmbed::new()
             .title("📅 Reserve Equipment - Step 1/3")
             .description(format!("**Equipment:** {}\n\n**Step 1:** Please enter the start date and time for your reservation.\n\n⏰ **Format:** YYYY-MM-DD HH:MM (JST)\n📝 **Example:** 2024-01-15 14:30\n\n⚠️ **Note:** Start time must be in the future.", equipment_name))
@@ -2466,10 +2469,10 @@ impl Handler {
             .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_start_input:{}", interaction.token))
+            CreateButton::new(format!("reserve_start_input:{}", short_session_id))
                 .label("📅 Enter Start Time")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2494,6 +2497,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let start_jst = crate::time::utc_to_jst_string(start_time);
 
         let embed = CreateEmbed::new()
@@ -2503,13 +2509,13 @@ impl Handler {
             .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_end_input:{}", interaction.token))
+            CreateButton::new(format!("reserve_end_input:{}", short_session_id))
                 .label("📅 Enter End Time")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("reserve_back_start:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_start:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2535,6 +2541,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let start_jst = crate::time::utc_to_jst_string(start_time);
         let end_jst = crate::time::utc_to_jst_string(end_time);
 
@@ -2545,7 +2554,7 @@ impl Handler {
 
         let mut buttons =
             vec![
-                CreateButton::new(format!("reserve_location_input:{}", interaction.token))
+                CreateButton::new(format!("reserve_location_input:{}", short_session_id))
                     .label("📍 Enter Location")
                     .style(ButtonStyle::Primary),
             ];
@@ -2553,7 +2562,7 @@ impl Handler {
         if let Some(ref default_loc) = default_location {
             if !default_loc.is_empty() {
                 buttons.push(
-                    CreateButton::new(format!("reserve_location_default:{}", interaction.token))
+                    CreateButton::new(format!("reserve_location_default:{}", short_session_id))
                         .label(format!("📍 Use Default ({})", default_loc))
                         .style(ButtonStyle::Secondary),
                 );
@@ -2561,13 +2570,13 @@ impl Handler {
         }
 
         buttons.extend_from_slice(&[
-            CreateButton::new(format!("reserve_location_skip:{}", interaction.token))
+            CreateButton::new(format!("reserve_location_skip:{}", short_session_id))
                 .label("⏭️ Skip Location")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_back_end:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_end:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2597,8 +2606,12 @@ impl Handler {
         let end_jst = crate::time::utc_to_jst_string(end_time);
         let location_text = location.as_deref().unwrap_or("Not specified");
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         // Check for conflicts in real-time before showing confirmation
-        let state_key = (interaction.user.id, interaction.token.clone());
+        let effective_token = Self::get_effective_token(interaction).await;
+        let state_key = (interaction.user.id, effective_token);
         let equipment_id = {
             let states = RESERVATION_WIZARD_STATES.lock().await;
             states.get(&state_key).map(|s| s.equipment_id).unwrap_or(0)
@@ -2633,10 +2646,10 @@ impl Handler {
                 .color(Colour::RED);
 
             let buttons = CreateActionRow::Buttons(vec![
-                CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                CreateButton::new(format!("reserve_back_location:{}", short_session_id))
                     .label("⬅️ Back to Times")
                     .style(ButtonStyle::Secondary),
-                CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                     .label("❌ Cancel")
                     .style(ButtonStyle::Danger),
             ]);
@@ -2657,13 +2670,13 @@ impl Handler {
             .color(Colour::DARK_GREEN);
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_confirm:{}", interaction.token))
+            CreateButton::new(format!("reserve_confirm:{}", short_session_id))
                 .label("✅ Confirm Reservation")
                 .style(ButtonStyle::Success),
-            CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_location:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6036,20 +6049,23 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_time_today:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_today:{}", short_session_id))
                 .label("📅 Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_24h:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_24h:{}", short_session_id))
                 .label("🕐 Next 24h")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_7d:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_7d:{}", short_session_id))
                 .label("📊 Next 7 days")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_custom:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_custom:{}", short_session_id))
                 .label("⚙️ Custom")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_time_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_all:{}", short_session_id))
                 .label("🌐 All Time")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6081,17 +6097,20 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_status_active:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_active:{}", short_session_id))
                 .label("🟢 Active")
                 .style(ButtonStyle::Success),
-            CreateButton::new(format!("mgmt_status_upcoming:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_upcoming:{}", short_session_id))
                 .label("🟡 Upcoming")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_returned:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_returned:{}", short_session_id))
                 .label("🔄 Returned Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_all:{}", short_session_id))
                 .label("📊 All Status")
                 .style(ButtonStyle::Primary),
         ]);
@@ -6870,18 +6889,19 @@ impl Handler {
             embed = embed.field("📋 Log Entries", "No log entries found for the current filters.", false);
         }
 
-        // Create filter controls
+        // Create filter controls using short session ID
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
         let filter_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("log_filter_time:{}", interaction.token))
+            CreateButton::new(format!("log_filter_time:{}", short_session_id))
                 .label("📅 Time Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_filter_equipment:{}", interaction.token))
+            CreateButton::new(format!("log_filter_equipment:{}", short_session_id))
                 .label("🔧 Equipment Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_filter_action:{}", interaction.token))
+            CreateButton::new(format!("log_filter_action:{}", short_session_id))
                 .label("⚡ Action Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_clear_filters:{}", interaction.token))
+            CreateButton::new(format!("log_clear_filters:{}", short_session_id))
                 .label("🗑️ Clear All")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6890,14 +6910,14 @@ impl Handler {
         let mut pagination_buttons = vec![];
         if state.page > 0 {
             pagination_buttons.push(
-                CreateButton::new(format!("log_page_prev:{}", interaction.token))
+                CreateButton::new(format!("log_page_prev:{}", short_session_id))
                     .label("⬅️ Previous")
                     .style(ButtonStyle::Secondary),
             );
         }
         if end_idx < total_count {
             pagination_buttons.push(
-                CreateButton::new(format!("log_page_next:{}", interaction.token))
+                CreateButton::new(format!("log_page_next:{}", short_session_id))
                     .label("➡️ Next")
                     .style(ButtonStyle::Secondary),
             );
@@ -6911,13 +6931,13 @@ impl Handler {
 
         // Create action buttons
         let action_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("log_refresh:{}", interaction.token))
+            CreateButton::new(format!("log_refresh:{}", short_session_id))
                 .label("🔄 Refresh")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("log_export:{}", interaction.token))
+            CreateButton::new(format!("log_export:{}", short_session_id))
                 .label("📊 Export CSV")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_back_mgmt:{}", interaction.token))
+            CreateButton::new(format!("log_back_mgmt:{}", short_session_id))
                 .label("⬅️ Back to Management")
                 .style(ButtonStyle::Secondary),
         ]);
