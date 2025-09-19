@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jobs (job_type, scheduled_for, payload, status, created_at, updated_at)\n             VALUES ('session_cleanup', ?, '{}', 'Pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a15ac5e9dc620fe7a0f596879ee43857b7b44f8e562a8f9dadfc08c9558e8cad"
+}
