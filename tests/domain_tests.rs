@@ -257,7 +257,7 @@ async fn test_concurrent_reservation_attempts() -> Result<()> {
         }
     });
 
-    let (result1, result2) = tokio::join!(task1, task2);
+    let (result1, result2): (Result<bool, tokio::task::JoinError>, Result<bool, tokio::task::JoinError>) = tokio::join!(task1, task2);
     let success1 = result1.unwrap();
     let success2 = result2.unwrap();
 
