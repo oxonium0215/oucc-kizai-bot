@@ -10,7 +10,8 @@ use tracing::{error, info, warn};
 use crate::models::{DeliveryMethod, Job, ReminderKind};
 use crate::time::utc_to_jst_string;
 use crate::traits::DiscordApi;
-use crate::transfer_notifications::{TransferNotificationService, TransferNotificationType};
+use crate::transfer_notifications::TransferNotificationService;
+use crate::transfer_notifications::TransferNotificationType;
 
 // Helper function to convert NaiveDateTime to DateTime<Utc>
 fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
