@@ -276,13 +276,14 @@ impl TransferNotificationService {
             notification.equipment_name()
         );
 
+        let timestamp = Utc::now();
         sqlx::query!(
             "INSERT INTO equipment_logs (equipment_id, user_id, action, location, previous_status, new_status, notes, timestamp)
              VALUES (?, ?, 'NotifyFail', NULL, NULL, NULL, ?, ?)",
             equipment_id,
             user_id,
             note,
-            Utc::now()
+            timestamp
         )
         .execute(&self.db)
         .await?;

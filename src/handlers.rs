@@ -4,7 +4,7 @@ use serenity::all::ComponentInteractionDataKind;
 use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -45,6 +45,28 @@ pub struct ManagementState {
     items_per_page: usize,
 }
 
+// Operation Log Viewer state
+#[derive(Debug, Clone)]
+pub struct LogViewerState {
+    time_filter: LogTimeFilter,
+    equipment_filter: Option<Vec<i64>>, // Equipment IDs, None means all
+    action_filter: Option<String>,      // Action type filter, None means all
+    page: usize,
+    items_per_page: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum LogTimeFilter {
+    Today,
+    Last7Days,
+    Last30Days,
+    Custom {
+        start_utc: DateTime<Utc>,
+        end_utc: DateTime<Utc>,
+    },
+    All,
+}
+
 #[derive(Debug, Clone)]
 pub enum TimeFilter {
     Today,
@@ -77,9 +99,22 @@ impl Default for ManagementState {
     }
 }
 
+impl Default for LogViewerState {
+    fn default() -> Self {
+        Self {
+            time_filter: LogTimeFilter::Today,
+            equipment_filter: None,
+            action_filter: None,
+            page: 0,
+            items_per_page: 15,
+        }
+    }
+}
+
 lazy_static::lazy_static! {
     static ref RESERVATION_WIZARD_STATES: Arc<Mutex<HashMap<(UserId, String), ReservationWizardState>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref MANAGEMENT_STATES: Arc<Mutex<HashMap<(GuildId, UserId, String), ManagementState>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref LOG_VIEWER_STATES: Arc<Mutex<HashMap<(GuildId, UserId, String), LogViewerState>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 // Helper struct for simulating component interactions from modals
@@ -485,6 +520,28 @@ impl Handler {
                     self.handle_mgmt_export(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("mgmt_jump:") {
                     self.handle_mgmt_jump(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_logs_open:") {
+                    self.handle_mgmt_logs_open(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_filter_time:") {
+                    self.handle_log_filter_time(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_filter_equipment:") {
+                    self.handle_log_filter_equipment(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_filter_action:") {
+                    self.handle_log_filter_action(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_clear_filters:") {
+                    self.handle_log_clear_filters(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_page_prev:") {
+                    self.handle_log_page_prev(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_page_next:") {
+                    self.handle_log_page_next(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_refresh:") {
+                    self.handle_log_refresh(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_export:") {
+                    self.handle_log_export(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_back_mgmt:") {
+                    self.handle_log_back_mgmt(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("log_time_select:") {
+                    self.handle_log_time_select(ctx, interaction).await?
                 } else if interaction
                     .data
                     .custom_id
@@ -736,6 +793,9 @@ impl Handler {
                 .style(ButtonStyle::Secondary),
             CreateButton::new(format!("mgmt_jump:{}", interaction.token))
                 .label("🔗 Jump to Equipment")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("mgmt_logs_open:{}", interaction.token))
+                .label("📋 Operation Logs")
                 .style(ButtonStyle::Secondary),
         ]);
 
@@ -5841,6 +5901,366 @@ impl Handler {
             .await
     }
 
+    /// Handle opening operation log viewer
+    async fn handle_mgmt_logs_open(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to view operation logs.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Show the operation log viewer
+        self.show_operation_log_viewer(ctx, interaction, false)
+            .await
+    }
+
+    /// Show operation log viewer interface
+    async fn show_operation_log_viewer(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        is_update: bool,
+    ) -> Result<()> {
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+
+        let state = {
+            let states = LOG_VIEWER_STATES.lock().await;
+            states.get(&state_key).cloned().unwrap_or_default()
+        };
+
+        // Create log viewer embed
+        use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
+
+        let mut embed = CreateEmbed::new()
+            .title("📋 Operation Log Viewer")
+            .color(Colour::ORANGE);
+
+        // Get time filter description
+        let time_desc = match &state.time_filter {
+            LogTimeFilter::Today => "Today".to_string(),
+            LogTimeFilter::Last7Days => "Last 7 Days".to_string(),
+            LogTimeFilter::Last30Days => "Last 30 Days".to_string(),
+            LogTimeFilter::Custom { start_utc, end_utc } => {
+                format!(
+                    "{} to {}",
+                    crate::time::utc_to_jst_string(*start_utc),
+                    crate::time::utc_to_jst_string(*end_utc)
+                )
+            }
+            LogTimeFilter::All => "All Time".to_string(),
+        };
+
+        // Get equipment filter description
+        let equipment_desc = if let Some(ref eq_ids) = state.equipment_filter {
+            if eq_ids.is_empty() {
+                "All Equipment".to_string()
+            } else {
+                format!("{} equipment(s) selected", eq_ids.len())
+            }
+        } else {
+            "All Equipment".to_string()
+        };
+
+        let action_desc = state.action_filter.as_deref().unwrap_or("All Actions").to_string();
+
+        embed = embed.field(
+            "🔍 Current Filters",
+            format!(
+                "**Time:** {}\\n**Equipment:** {}\\n**Action:** {}",
+                time_desc, equipment_desc, action_desc
+            ),
+            false,
+        );
+
+        // Get operation logs based on filters
+        let logs = self.get_filtered_operation_logs(guild_id, &state).await?;
+        let total_count = logs.len();
+        let start_idx = state.page * state.items_per_page;
+        let end_idx = std::cmp::min(start_idx + state.items_per_page, total_count);
+        let page_logs = &logs[start_idx..end_idx];
+
+        embed = embed.field(
+            "📊 Results",
+            format!(
+                "Showing {}-{} of {} total log entries (Page {})",
+                start_idx + 1,
+                end_idx,
+                total_count,
+                state.page + 1
+            ),
+            false,
+        );
+
+        // Add log entries to embed
+        if !page_logs.is_empty() {
+            let mut log_text = String::new();
+            for (idx, log) in page_logs.iter().enumerate() {
+                let global_idx = start_idx + idx + 1;
+                let equipment_name = self.get_equipment_name(log.equipment_id).await.unwrap_or_else(|_| "Unknown".to_string());
+                let time_jst = crate::time::utc_to_jst_string(log.timestamp);
+                
+                let notes_part = if let Some(ref notes) = log.notes {
+                    if !notes.is_empty() {
+                        format!(" - {}", notes)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                log_text.push_str(&format!(
+                    "**{}**. {} | {} | <@{}> | {}{}\\n",
+                    global_idx,
+                    time_jst,
+                    equipment_name,
+                    log.user_id,
+                    log.action,
+                    notes_part
+                ));
+            }
+            embed = embed.field("📋 Log Entries", log_text, false);
+        } else {
+            embed = embed.field("📋 Log Entries", "No log entries found for the current filters.", false);
+        }
+
+        // Create filter controls
+        let filter_row = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("log_filter_time:{}", interaction.token))
+                .label("📅 Time Filter")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("log_filter_equipment:{}", interaction.token))
+                .label("🔧 Equipment Filter")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("log_filter_action:{}", interaction.token))
+                .label("⚡ Action Filter")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("log_clear_filters:{}", interaction.token))
+                .label("🗑️ Clear All")
+                .style(ButtonStyle::Danger),
+        ]);
+
+        // Create pagination controls
+        let mut pagination_buttons = vec![];
+        if state.page > 0 {
+            pagination_buttons.push(
+                CreateButton::new(format!("log_page_prev:{}", interaction.token))
+                    .label("⬅️ Previous")
+                    .style(ButtonStyle::Secondary),
+            );
+        }
+        if end_idx < total_count {
+            pagination_buttons.push(
+                CreateButton::new(format!("log_page_next:{}", interaction.token))
+                    .label("➡️ Next")
+                    .style(ButtonStyle::Secondary),
+            );
+        }
+
+        let pagination_row = if !pagination_buttons.is_empty() {
+            Some(CreateActionRow::Buttons(pagination_buttons))
+        } else {
+            None
+        };
+
+        // Create action buttons
+        let action_row = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("log_refresh:{}", interaction.token))
+                .label("🔄 Refresh")
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("log_export:{}", interaction.token))
+                .label("📊 Export CSV")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("log_back_mgmt:{}", interaction.token))
+                .label("⬅️ Back to Management")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let mut components = vec![filter_row];
+
+        // Add pagination if exists
+        if let Some(pagination) = pagination_row {
+            components.push(pagination);
+        }
+
+        // Add main action row
+        components.push(action_row);
+
+        if is_update {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(components),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        } else {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(components)
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get filtered operation logs
+    async fn get_filtered_operation_logs(
+        &self,
+        guild_id: i64,
+        state: &LogViewerState,
+    ) -> Result<Vec<crate::models::EquipmentLog>> {
+        // Build time filter clause
+        let (time_where, time_params) = match &state.time_filter {
+            LogTimeFilter::Today => {
+                let today_start = chrono::Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap();
+                let tomorrow_start = today_start + chrono::Duration::days(1);
+                (
+                    "AND el.timestamp >= ? AND el.timestamp < ?",
+                    Some((today_start, tomorrow_start)),
+                )
+            }
+            LogTimeFilter::Last7Days => {
+                let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
+                ("AND el.timestamp >= ?", Some((week_ago.naive_utc(), chrono::NaiveDateTime::default())))
+            }
+            LogTimeFilter::Last30Days => {
+                let month_ago = chrono::Utc::now() - chrono::Duration::days(30);
+                ("AND el.timestamp >= ?", Some((month_ago.naive_utc(), chrono::NaiveDateTime::default())))
+            }
+            LogTimeFilter::Custom { start_utc, end_utc } => {
+                (
+                    "AND el.timestamp >= ? AND el.timestamp <= ?",
+                    Some((start_utc.naive_utc(), end_utc.naive_utc())),
+                )
+            }
+            LogTimeFilter::All => ("", None),
+        };
+
+        // Build equipment filter clause
+        let equipment_where = if let Some(ref eq_ids) = state.equipment_filter {
+            if !eq_ids.is_empty() {
+                format!("AND e.id IN ({})", eq_ids.iter().map(|_| "?").collect::<Vec<_>>().join(","))
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Build action filter clause
+        let action_where = if let Some(ref action) = state.action_filter {
+            "AND el.action = ?"
+        } else {
+            ""
+        };
+
+        // For now, use a simple query - in production you'd want proper dynamic query building
+        let logs = sqlx::query!(
+            "SELECT el.id, el.equipment_id, el.user_id, el.action, el.location, el.previous_status, el.new_status, el.notes, el.timestamp
+             FROM equipment_logs el 
+             JOIN equipment e ON el.equipment_id = e.id 
+             WHERE e.guild_id = ?
+             ORDER BY el.timestamp DESC
+             LIMIT 100",
+            guild_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        // Convert to proper EquipmentLog structs
+        let mut logs: Vec<crate::models::EquipmentLog> = logs
+            .into_iter()
+            .map(|row| {
+                use chrono::{DateTime, Utc};
+                crate::models::EquipmentLog {
+                    id: row.id,
+                    equipment_id: row.equipment_id,
+                    user_id: row.user_id,
+                    action: row.action,
+                    location: row.location,
+                    previous_status: row.previous_status,
+                    new_status: row.new_status,
+                    notes: row.notes,
+                    timestamp: DateTime::<Utc>::from_naive_utc_and_offset(row.timestamp.unwrap_or_default(), Utc),
+                }
+            })
+            .collect();
+
+        // Apply filters in memory (not optimal for large datasets, but simple for now)
+        logs = logs
+            .into_iter()
+            .filter(|log| {
+                // Apply time filter
+                let time_match = match &state.time_filter {
+                    LogTimeFilter::Today => {
+                        let today_start = chrono::Utc::now()
+                            .date_naive()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap();
+                        let tomorrow_start = today_start + chrono::Duration::days(1);
+                        let today_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_start, Utc);
+                        let tomorrow_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(tomorrow_start, Utc);
+                        log.timestamp >= today_start_utc && log.timestamp < tomorrow_start_utc
+                    }
+                    LogTimeFilter::Last7Days => {
+                        let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
+                        log.timestamp >= week_ago
+                    }
+                    LogTimeFilter::Last30Days => {
+                        let month_ago = chrono::Utc::now() - chrono::Duration::days(30);
+                        log.timestamp >= month_ago
+                    }
+                    LogTimeFilter::Custom { start_utc, end_utc } => {
+                        log.timestamp >= *start_utc && log.timestamp <= *end_utc
+                    }
+                    LogTimeFilter::All => true,
+                };
+
+                if !time_match {
+                    return false;
+                }
+
+                // Apply equipment filter
+                if let Some(ref eq_ids) = state.equipment_filter {
+                    if !eq_ids.is_empty() && !eq_ids.contains(&log.equipment_id) {
+                        return false;
+                    }
+                }
+
+                // Apply action filter
+                if let Some(ref action) = state.action_filter {
+                    if log.action != *action {
+                        return false;
+                    }
+                }
+
+                true
+            })
+            .collect();
+
+        Ok(logs)
+    }
+
     /// Show transfer modal for user selection
     async fn show_transfer_modal(
         &self,
@@ -6201,16 +6621,18 @@ impl Handler {
 
             // Notify the original requester
             let guild_id = interaction.guild_id.map(|g| g.get() as i64).unwrap_or(0);
-            self.notify_transfer_outcome(
-                ctx, 
-                details.requested_by_user_id, 
-                details.equipment_id,
-                &details.equipment_name, 
-                guild_id,
-                details.reservation_id,
-                true, 
-                None
-            ).await;
+            if let Some(requester_id) = details.requested_by_user_id {
+                self.notify_transfer_outcome(
+                    ctx, 
+                    requester_id, 
+                    details.equipment_id,
+                    &details.equipment_name, 
+                    guild_id,
+                    details.reservation_id,
+                    true, 
+                    None
+                ).await;
+            }
 
         } else {
             // Deny the transfer
@@ -6236,16 +6658,18 @@ impl Handler {
 
             // Notify the original requester
             let guild_id = interaction.guild_id.map(|g| g.get() as i64).unwrap_or(0);
-            self.notify_transfer_outcome(
-                ctx, 
-                details.requested_by_user_id, 
-                details.equipment_id,
-                &details.equipment_name, 
-                guild_id,
-                details.reservation_id,
-                false, 
-                Some("受信者によって拒否されました")
-            ).await;
+            if let Some(requester_id) = details.requested_by_user_id {
+                self.notify_transfer_outcome(
+                    ctx, 
+                    requester_id, 
+                    details.equipment_id,
+                    &details.equipment_name, 
+                    guild_id,
+                    details.reservation_id,
+                    false, 
+                    Some("受信者によって拒否されました")
+                ).await;
+            }
         }
 
         // Trigger equipment display reconciliation if approved
@@ -6672,6 +7096,216 @@ impl Handler {
         );
         modal.create_response(&ctx.http, response).await?;
 
+        Ok(())
+    }
+
+    /// Handle log time filter
+    async fn handle_log_filter_time(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // For simplicity, show a selection menu
+        let options = vec![
+            serenity::all::CreateSelectMenuOption::new("Today", "today"),
+            serenity::all::CreateSelectMenuOption::new("Last 7 Days", "last7days"),
+            serenity::all::CreateSelectMenuOption::new("Last 30 Days", "last30days"),
+            serenity::all::CreateSelectMenuOption::new("All Time", "all"),
+        ];
+
+        let select_menu = serenity::all::CreateSelectMenu::new(
+            format!("log_time_select:{}", interaction.token),
+            serenity::all::CreateSelectMenuKind::String { options },
+        )
+        .placeholder("Select time period");
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("Please select a time period:")
+                .components(vec![serenity::all::CreateActionRow::SelectMenu(select_menu)]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    /// Handle log equipment filter (placeholder)
+    async fn handle_log_filter_equipment(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🚧 Equipment filter not yet implemented.")
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    /// Handle log action filter (placeholder)
+    async fn handle_log_filter_action(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🚧 Action filter not yet implemented.")
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    /// Handle clearing log filters
+    async fn handle_log_clear_filters(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+
+        // Reset to default state
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            states.insert(state_key, LogViewerState::default());
+        }
+
+        // Refresh the log viewer
+        self.show_operation_log_viewer(ctx, interaction, true).await
+    }
+
+    /// Handle log pagination - previous page
+    async fn handle_log_page_prev(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                if state.page > 0 {
+                    state.page -= 1;
+                }
+            }
+        }
+
+        self.show_operation_log_viewer(ctx, interaction, true).await
+    }
+
+    /// Handle log pagination - next page
+    async fn handle_log_page_next(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            if let Some(state) = states.get_mut(&state_key) {
+                state.page += 1;
+            }
+        }
+
+        self.show_operation_log_viewer(ctx, interaction, true).await
+    }
+
+    /// Handle log refresh
+    async fn handle_log_refresh(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Just refresh the current view
+        self.show_operation_log_viewer(ctx, interaction, true).await
+    }
+
+    /// Handle log export (placeholder)
+    async fn handle_log_export(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        let response = serenity::all::CreateInteractionResponse::Message(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("🚧 Log export not yet implemented.")
+                .ephemeral(true),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    /// Handle back to management dashboard
+    async fn handle_log_back_mgmt(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Clean up log viewer state
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            states.remove(&state_key);
+        }
+
+        // Show management dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    /// Handle log time selection
+    async fn handle_log_time_select(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            if let Some(selected_value) = values.first() {
+                let state_key = (
+                    interaction.guild_id.unwrap(),
+                    interaction.user.id,
+                    interaction.token.clone(),
+                );
+
+                let time_filter = match selected_value.as_str() {
+                    "today" => LogTimeFilter::Today,
+                    "last7days" => LogTimeFilter::Last7Days,
+                    "last30days" => LogTimeFilter::Last30Days,
+                    "all" => LogTimeFilter::All,
+                    _ => LogTimeFilter::Today,
+                };
+
+                // Update state
+                {
+                    let mut states = LOG_VIEWER_STATES.lock().await;
+                    let state = states.entry(state_key).or_insert_with(LogViewerState::default);
+                    state.time_filter = time_filter;
+                    state.page = 0; // Reset to first page when filter changes
+                }
+
+                // Refresh the log viewer
+                self.show_operation_log_viewer(ctx, interaction, true).await?;
+            }
+        }
         Ok(())
     }
 }
