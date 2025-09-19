@@ -1,4 +1,4 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Asia::Tokyo;
 
 /// Convert UTC DateTime to JST formatted string
@@ -67,4 +67,9 @@ pub fn parse_jst_string(jst_str: &str) -> Option<DateTime<Utc>> {
     let minute: u32 = parts[4].parse().ok()?;
 
     jst_to_utc(year, month, day, hour, minute)
+}
+
+/// Convert NaiveDateTime to UTC DateTime
+pub fn naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
+    DateTime::from_naive_utc_and_offset(naive, Utc)
 }

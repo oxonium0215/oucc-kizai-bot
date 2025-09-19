@@ -53,6 +53,9 @@ impl JobWorker {
 
         // Process scheduled transfers first
         self.process_scheduled_transfers().await?;
+        
+        // Process expired transfer requests
+        self.process_expired_transfers().await?;
 
         // Get pending jobs that are due
         let jobs: Vec<Job> = sqlx::query_as::<_, Job>(
@@ -90,19 +93,19 @@ impl JobWorker {
         let transfers: Vec<crate::models::TransferRequest> = transfer_rows
             .into_iter()
             .map(|row| crate::models::TransferRequest {
-                id: row.id,
+                id: row.id.unwrap_or(0),
                 reservation_id: row.reservation_id,
                 from_user_id: row.from_user_id,
                 to_user_id: row.to_user_id,
-                requested_by_user_id: row.requested_by_user_id,
+                requested_by_user_id: row.requested_by_user_id.unwrap_or(row.from_user_id),
                 execute_at_utc: row.execute_at_utc.map(naive_to_utc),
                 note: row.note,
                 expires_at: naive_to_utc(row.expires_at),
                 status: row.status,
                 canceled_at_utc: row.canceled_at_utc.map(naive_to_utc),
                 canceled_by_user_id: row.canceled_by_user_id,
-                created_at: naive_to_utc(row.created_at),
-                updated_at: naive_to_utc(row.updated_at),
+                created_at: naive_to_utc(row.created_at.unwrap_or_else(|| Utc::now().naive_utc())),
+                updated_at: naive_to_utc(row.updated_at.unwrap_or_else(|| Utc::now().naive_utc())),
             })
             .collect();
 
@@ -255,6 +258,94 @@ impl JobWorker {
 
         info!("Marked transfer {} as expired", transfer.id);
         Ok(())
+    }
+
+    /// Process transfer requests that have expired (3 hours with no response)
+    async fn process_expired_transfers(&self) -> Result<()> {
+        let now = Utc::now().naive_utc();
+
+        // Get pending transfer requests that have expired
+        let expired_transfer_rows = sqlx::query!(
+            "SELECT * FROM transfer_requests 
+             WHERE status = 'Pending' AND execute_at_utc IS NULL AND expires_at <= ?
+             ORDER BY expires_at LIMIT 10",
+            now
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        info!("Found {} expired transfer requests", expired_transfer_rows.len());
+
+        for row in expired_transfer_rows {
+            // Convert to model
+            let transfer = crate::models::TransferRequest {
+                id: row.id.unwrap_or(0),
+                reservation_id: row.reservation_id,
+                from_user_id: row.from_user_id,
+                to_user_id: row.to_user_id,
+                requested_by_user_id: row.requested_by_user_id.unwrap_or(row.from_user_id),
+                execute_at_utc: row.execute_at_utc.map(naive_to_utc),
+                note: row.note,
+                expires_at: naive_to_utc(row.expires_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+                status: row.status,
+                canceled_at_utc: row.canceled_at_utc.map(naive_to_utc),
+                canceled_by_user_id: row.canceled_by_user_id,
+                created_at: naive_to_utc(row.created_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+                updated_at: naive_to_utc(row.updated_at.unwrap_or_else(|| chrono::Utc::now().naive_utc())),
+            };
+
+            if let Err(e) = self.handle_transfer_timeout(&transfer).await {
+                error!("Failed to handle timeout for transfer {}: {}", transfer.id, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle a transfer request that has timed out
+    async fn handle_transfer_timeout(&self, transfer: &crate::models::TransferRequest) -> Result<()> {
+        info!("Handling timeout for transfer {}", transfer.id);
+
+        // Mark transfer as expired
+        sqlx::query!(
+            "UPDATE transfer_requests SET status = 'Expired', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            transfer.id
+        )
+        .execute(&self.db)
+        .await?;
+
+        // Get equipment details for notification
+        let equipment_details = sqlx::query!(
+            "SELECT e.name as equipment_name
+             FROM transfer_requests tr
+             JOIN reservations r ON tr.reservation_id = r.id
+             JOIN equipment e ON r.equipment_id = e.id
+             WHERE tr.id = ?",
+            transfer.id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        if let Some(details) = equipment_details {
+            // Notify the original requester that the transfer timed out
+            self.send_timeout_notification(transfer.requested_by_user_id, &details.equipment_name).await;
+        }
+
+        info!("Successfully handled timeout for transfer {}", transfer.id);
+        Ok(())
+    }
+
+    /// Send timeout notification to the transfer requester
+    async fn send_timeout_notification(&self, requester_id: i64, equipment_name: &str) {
+        // Since we don't have Discord context in the job worker, we'll log this
+        // In a full implementation, we would send this via the Discord API
+        info!(
+            "Transfer timeout notification needed for user {} regarding equipment '{}'",
+            requester_id, equipment_name
+        );
+        
+        // TODO: In a real implementation, this would send a DM notification:
+        // "⏰ 移譲依頼の期限切れ\n\n「{}」の予約移譲依頼が3時間以内に承認されなかったため、自動的にキャンセルされました。"
     }
 
     async fn process_job(&self, job: &Job) -> Result<()> {
