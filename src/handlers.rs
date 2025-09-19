@@ -12,6 +12,7 @@ use tracing::{error, info};
 
 use crate::commands::SetupCommand;
 use crate::equipment::EquipmentRenderer;
+use crate::transfer_notifications::{TransferNotificationService, TransferNotificationType};
 use crate::utils;
 
 // In-memory storage for reservation wizard state
@@ -92,11 +93,16 @@ struct ComponentInteractionRef {
 
 pub struct Handler {
     db: SqlitePool,
+    notification_service: TransferNotificationService,
 }
 
 impl Handler {
     pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+        let notification_service = TransferNotificationService::new(db.clone());
+        Self { 
+            db,
+            notification_service,
+        }
     }
 }
 
@@ -6194,7 +6200,17 @@ impl Handler {
             interaction.create_response(&ctx.http, response).await?;
 
             // Notify the original requester
-            self.notify_transfer_outcome(ctx, details.requested_by_user_id, &details.equipment_name, true, None).await;
+            let guild_id = interaction.guild_id.map(|g| g.get() as i64).unwrap_or(0);
+            self.notify_transfer_outcome(
+                ctx, 
+                details.requested_by_user_id, 
+                details.equipment_id,
+                &details.equipment_name, 
+                guild_id,
+                details.reservation_id,
+                true, 
+                None
+            ).await;
 
         } else {
             // Deny the transfer
@@ -6219,7 +6235,17 @@ impl Handler {
             interaction.create_response(&ctx.http, response).await?;
 
             // Notify the original requester
-            self.notify_transfer_outcome(ctx, details.requested_by_user_id, &details.equipment_name, false, Some("受信者によって拒否されました")).await;
+            let guild_id = interaction.guild_id.map(|g| g.get() as i64).unwrap_or(0);
+            self.notify_transfer_outcome(
+                ctx, 
+                details.requested_by_user_id, 
+                details.equipment_id,
+                &details.equipment_name, 
+                guild_id,
+                details.reservation_id,
+                false, 
+                Some("受信者によって拒否されました")
+            ).await;
         }
 
         // Trigger equipment display reconciliation if approved
@@ -6240,33 +6266,33 @@ impl Handler {
         &self,
         ctx: &Context,
         requester_id: i64,
+        equipment_id: i64,
         equipment_name: &str,
+        guild_id: i64,
+        reservation_id: i64,
         approved: bool,
         reason: Option<&str>,
     ) {
-        let user_id = serenity::all::UserId::new(requester_id as u64);
-        let message = if approved {
-            format!("✅ **移譲承認通知**\n\n「{}」の予約移譲依頼が承認されました。", equipment_name)
+        let notification = if approved {
+            TransferNotificationType::Approved {
+                equipment_name: equipment_name.to_string(),
+            }
         } else {
-            format!(
-                "❌ **移譲拒否通知**\n\n「{}」の予約移譲依頼が拒否されました。\n\n理由: {}",
-                equipment_name,
-                reason.unwrap_or("受信者によって拒否されました")
-            )
+            TransferNotificationType::Denied {
+                equipment_name: equipment_name.to_string(),
+                reason: reason.unwrap_or("受信者によって拒否されました").to_string(),
+            }
         };
 
-        match user_id.create_dm_channel(&ctx.http).await {
-            Ok(dm_channel) => {
-                if let Err(e) = dm_channel
-                    .send_message(&ctx.http, serenity::all::CreateMessage::new().content(&message))
-                    .await
-                {
-                    tracing::warn!("Failed to send transfer outcome DM to user {}: {}", requester_id, e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create DM channel with user {}: {}", requester_id, e);
-            }
+        if let Err(e) = self.notification_service.send_notification(
+            ctx,
+            requester_id,
+            reservation_id,
+            equipment_id,
+            guild_id,
+            notification,
+        ).await {
+            error!("Failed to send transfer outcome notification: {}", e);
         }
     }
 
@@ -6342,9 +6368,9 @@ impl Handler {
 
         tx.commit().await?;
 
-        // Get equipment name for the notification
+        // Get equipment details for the notification
         let reservation_details = sqlx::query!(
-            "SELECT e.name as equipment_name, r.start_time, r.end_time, r.location
+            "SELECT e.id as equipment_id, e.guild_id, e.name as equipment_name, r.start_time, r.end_time, r.location
              FROM reservations r
              JOIN equipment e ON r.equipment_id = e.id
              WHERE r.id = ?",
@@ -6373,8 +6399,28 @@ impl Handler {
 
         let target_user_id = serenity::all::UserId::new(to_user_id as u64);
         
-        // Try to send DM with approval buttons
+        // Try to send DM with approval buttons (detailed message)
         let dm_sent = self.send_transfer_approval_dm(ctx, target_user_id, transfer_id.id, &approval_message).await;
+
+        // If detailed DM failed, try generic notification with fallback
+        if !dm_sent {
+            let notification = TransferNotificationType::RequestSent {
+                equipment_name: reservation_details.equipment_name.clone(),
+                requester_id: requesting_user_id,
+                reservation_id,
+            };
+
+            if let Err(e) = self.notification_service.send_notification(
+                ctx,
+                to_user_id,
+                reservation_id,
+                reservation_details.equipment_id,
+                reservation_details.guild_id,
+                notification,
+            ).await {
+                error!("Failed to send transfer request fallback notification: {}", e);
+            }
+        }
 
         // Respond to the original interaction
         let confirmation_message = if dm_sent {
