@@ -123,8 +123,6 @@ lazy_static::lazy_static! {
     static ref RESERVATION_WIZARD_STATES: Arc<Mutex<HashMap<(UserId, String), ReservationWizardState>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref MANAGEMENT_STATES: Arc<Mutex<HashMap<(GuildId, UserId, String), ManagementState>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref LOG_VIEWER_STATES: Arc<Mutex<HashMap<(GuildId, UserId, String), LogViewerState>>> = Arc::new(Mutex::new(HashMap::new()));
-    // Short session ID mapping to avoid Discord's 100-character custom_id limit
-    static ref SESSION_ID_MAPPING: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 // Helper struct for simulating component interactions from modals
@@ -147,48 +145,6 @@ impl Handler {
         Self {
             db,
             // notification_service,
-        }
-    }
-
-    /// Generate a short session ID (8 characters) to avoid Discord's 100-character custom_id limit
-    async fn get_or_create_short_session_id(interaction_token: &str) -> String {
-        let mut mapping = SESSION_ID_MAPPING.lock().await;
-        
-        // Check if we already have a mapping for this token
-        for (short_id, token) in mapping.iter() {
-            if token == interaction_token {
-                return short_id.clone();
-            }
-        }
-        
-        // Generate a new short ID
-        let short_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        mapping.insert(short_id.clone(), interaction_token.to_string());
-        short_id
-    }
-
-    /// Resolve a short session ID back to the original interaction token
-    async fn resolve_session_id(short_id: &str) -> Option<String> {
-        let mapping = SESSION_ID_MAPPING.lock().await;
-        mapping.get(short_id).cloned()
-    }
-
-    /// Extract session ID from custom_id and resolve it to the original token
-    async fn resolve_token_from_custom_id(custom_id: &str) -> Option<String> {
-        if let Some(colon_pos) = custom_id.rfind(':') {
-            let short_id = &custom_id[colon_pos + 1..];
-            Self::resolve_session_id(short_id).await
-        } else {
-            None
-        }
-    }
-
-    /// Get the effective token for state lookup - either resolved from custom_id or fallback to interaction token
-    async fn get_effective_token(interaction: &ComponentInteraction) -> String {
-        if let Some(resolved_token) = Self::resolve_token_from_custom_id(&interaction.data.custom_id).await {
-            resolved_token
-        } else {
-            interaction.token.clone()
         }
     }
 }
@@ -410,8 +366,6 @@ impl Handler {
                 SetupCommand::handle_confirmation(ctx, interaction, &self.db, true).await?
             }
             "setup_cancel" => SetupCommand::handle_setup_cancel(ctx, interaction, &self.db).await?,
-            "setup_notification_back" => SetupCommand::handle_notification_back(ctx, interaction, &self.db).await?,
-            "setup_final_back" => SetupCommand::handle_final_back(ctx, interaction, &self.db).await?,
             "setup_roles_select" => {
                 SetupCommand::handle_role_selection(ctx, interaction, &self.db).await?
             }
@@ -425,18 +379,6 @@ impl Handler {
                 SetupCommand::handle_setup_complete(ctx, interaction, &self.db).await?
             }
             "notification_preferences" => {
-                SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
-            }
-            "dm_fallback_select" => {
-                SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
-            }
-            "pre_start_select" => {
-                SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
-            }
-            "pre_end_select" => {
-                SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
-            }
-            "overdue_select" => {
                 SetupCommand::handle_notification_preferences(ctx, interaction, &self.db).await?
             }
             "notification_next" => {
@@ -678,9 +620,6 @@ impl Handler {
         }
 
         // Initialize management state for this user session
-        // Generate short session ID to avoid Discord's 100-character custom_id limit
-        let _short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
-        
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
@@ -713,9 +652,6 @@ impl Handler {
             let states = MANAGEMENT_STATES.lock().await;
             states.get(&state_key).cloned().unwrap_or_default()
         };
-
-        // Get short session ID for use in custom_ids to avoid 100-character limit
-        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
 
         // Create dashboard embed
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
@@ -838,16 +774,16 @@ impl Handler {
 
         // Create filter controls
         let filter_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_filter_equipment:{}", short_session_id))
+            CreateButton::new(format!("mgmt_filter_equipment:{}", interaction.token))
                 .label("🔧 Equipment Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_filter_time:{}", short_session_id))
+            CreateButton::new(format!("mgmt_filter_time:{}", interaction.token))
                 .label("📅 Time Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_filter_status:{}", short_session_id))
+            CreateButton::new(format!("mgmt_filter_status:{}", interaction.token))
                 .label("📊 Status Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_clear_filters:{}", short_session_id))
+            CreateButton::new(format!("mgmt_clear_filters:{}", interaction.token))
                 .label("🗑️ Clear All")
                 .style(ButtonStyle::Danger),
         ]);
@@ -856,14 +792,14 @@ impl Handler {
         let mut pagination_buttons = vec![];
         if state.page > 0 {
             pagination_buttons.push(
-                CreateButton::new(format!("mgmt_page_prev:{}", short_session_id))
+                CreateButton::new(format!("mgmt_page_prev:{}", interaction.token))
                     .label("⬅️ Previous")
                     .style(ButtonStyle::Secondary),
             );
         }
         if end_idx < total_count {
             pagination_buttons.push(
-                CreateButton::new(format!("mgmt_page_next:{}", short_session_id))
+                CreateButton::new(format!("mgmt_page_next:{}", interaction.token))
                     .label("➡️ Next")
                     .style(ButtonStyle::Secondary),
             );
@@ -877,16 +813,16 @@ impl Handler {
 
         // Create action buttons
         let action_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_refresh:{}", short_session_id))
+            CreateButton::new(format!("mgmt_refresh:{}", interaction.token))
                 .label("🔄 Refresh Display")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_export:{}", short_session_id))
+            CreateButton::new(format!("mgmt_export:{}", interaction.token))
                 .label("📊 Export CSV")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_jump:{}", short_session_id))
+            CreateButton::new(format!("mgmt_jump:{}", interaction.token))
                 .label("🔗 Jump to Equipment")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_logs_open:{}", short_session_id))
+            CreateButton::new(format!("mgmt_logs_open:{}", interaction.token))
                 .label("📋 Operation Logs")
                 .style(ButtonStyle::Secondary),
         ]);
@@ -6152,14 +6088,11 @@ impl Handler {
             return Ok(());
         }
 
-        // Resolve the original token from custom_id
-        let original_token = Self::get_effective_token(interaction).await;
-
         // Update page in state
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            original_token,
+            interaction.token.clone(),
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;
@@ -6191,11 +6124,10 @@ impl Handler {
         }
 
         // Update page in state
-        let effective_token = Self::get_effective_token(interaction).await;
         let state_key = (
             interaction.guild_id.unwrap(),
             interaction.user.id,
-            effective_token,
+            interaction.token.clone(),
         );
         {
             let mut states = MANAGEMENT_STATES.lock().await;

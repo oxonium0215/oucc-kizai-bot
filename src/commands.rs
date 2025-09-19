@@ -346,7 +346,7 @@ impl SetupCommand {
 
         // Get current state
         let (state, selected_roles) = {
-            let states = SETUP_STATES.lock().await;
+            let mut states = SETUP_STATES.lock().await;
             if let Some(state) = states.get(&user_id) {
                 let roles = if skip {
                     Vec::new()
@@ -417,83 +417,39 @@ impl SetupCommand {
                 false,
             )
             .footer(serenity::all::CreateEmbedFooter::new(
-                "Current settings shown are defaults. Adjust settings below and click Next to continue.",
+                "Current settings shown are defaults. Click buttons to adjust or Next to continue.",
             ))
             .color(Colour::BLURPLE);
 
-        // Create separate select menus for each notification type
-        let dm_fallback_select = CreateSelectMenu::new(
-            "dm_fallback_select",
+        let select_menu = CreateSelectMenu::new(
+            "notification_preferences",
             CreateSelectMenuKind::String {
                 options: vec![
-                    CreateSelectMenuOption::new("Enabled", "dm_fallback_true")
+                    CreateSelectMenuOption::new("DM Fallback: Enabled", "dm_fallback_true")
                         .description("Send channel mentions when DMs fail")
-                        .default_selection(state.dm_fallback_enabled),
-                    CreateSelectMenuOption::new("Disabled", "dm_fallback_false")
-                        .description("Only send DMs, no channel fallback")
-                        .default_selection(!state.dm_fallback_enabled),
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("DM Fallback: Disabled", "dm_fallback_false")
+                        .description("Only send DMs, no channel fallback"),
+                    CreateSelectMenuOption::new("Pre-Start: 5 minutes", "pre_start_5"),
+                    CreateSelectMenuOption::new("Pre-Start: 15 minutes", "pre_start_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Pre-Start: 30 minutes", "pre_start_30"),
+                    CreateSelectMenuOption::new("Pre-End: 5 minutes", "pre_end_5"),
+                    CreateSelectMenuOption::new("Pre-End: 15 minutes", "pre_end_15")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Pre-End: 30 minutes", "pre_end_30"),
+                    CreateSelectMenuOption::new("Overdue: Every 6 hours", "overdue_6h"),
+                    CreateSelectMenuOption::new("Overdue: Every 12 hours", "overdue_12h")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Overdue: Every 24 hours", "overdue_24h"),
                 ],
             },
         )
-        .placeholder("DM Fallback Setting")
-        .min_values(1)
-        .max_values(1);
-
-        let pre_start_select = CreateSelectMenu::new(
-            "pre_start_select",
-            CreateSelectMenuKind::String {
-                options: vec![
-                    CreateSelectMenuOption::new("5 minutes", "pre_start_5")
-                        .default_selection(state.pre_start_minutes == 5),
-                    CreateSelectMenuOption::new("15 minutes", "pre_start_15")
-                        .default_selection(state.pre_start_minutes == 15),
-                    CreateSelectMenuOption::new("30 minutes", "pre_start_30")
-                        .default_selection(state.pre_start_minutes == 30),
-                ],
-            },
-        )
-        .placeholder("Pre-Start Reminder Time")
-        .min_values(1)
-        .max_values(1);
-
-        let pre_end_select = CreateSelectMenu::new(
-            "pre_end_select",
-            CreateSelectMenuKind::String {
-                options: vec![
-                    CreateSelectMenuOption::new("5 minutes", "pre_end_5")
-                        .default_selection(state.pre_end_minutes == 5),
-                    CreateSelectMenuOption::new("15 minutes", "pre_end_15")
-                        .default_selection(state.pre_end_minutes == 15),
-                    CreateSelectMenuOption::new("30 minutes", "pre_end_30")
-                        .default_selection(state.pre_end_minutes == 30),
-                ],
-            },
-        )
-        .placeholder("Pre-End Reminder Time")
-        .min_values(1)
-        .max_values(1);
-
-        let overdue_select = CreateSelectMenu::new(
-            "overdue_select",
-            CreateSelectMenuKind::String {
-                options: vec![
-                    CreateSelectMenuOption::new("Every 6 hours", "overdue_6h")
-                        .default_selection(state.overdue_repeat_hours == 6),
-                    CreateSelectMenuOption::new("Every 12 hours", "overdue_12h")
-                        .default_selection(state.overdue_repeat_hours == 12),
-                    CreateSelectMenuOption::new("Every 24 hours", "overdue_24h")
-                        .default_selection(state.overdue_repeat_hours == 24),
-                ],
-            },
-        )
-        .placeholder("Overdue Reminder Frequency")
-        .min_values(1)
-        .max_values(1);
+        .placeholder("Select notification preferences to modify")
+        .min_values(0)
+        .max_values(4);
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new("setup_notification_back")
-                .label("⬅️ Back")
-                .style(ButtonStyle::Secondary),
             CreateButton::new("notification_next")
                 .label("➡️ Next")
                 .style(ButtonStyle::Primary),
@@ -502,13 +458,7 @@ impl SetupCommand {
                 .style(ButtonStyle::Danger),
         ]);
 
-        let components = vec![
-            CreateActionRow::SelectMenu(dm_fallback_select),
-            CreateActionRow::SelectMenu(pre_start_select),
-            CreateActionRow::SelectMenu(pre_end_select),
-            CreateActionRow::SelectMenu(overdue_select),
-            buttons,
-        ];
+        let components = vec![CreateActionRow::SelectMenu(select_menu), buttons];
 
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
@@ -533,68 +483,24 @@ impl SetupCommand {
                 return Ok(());
             };
 
-        // Update notification preferences in state based on which select menu was used
+        // Update notification preferences in state
         {
             let mut states = SETUP_STATES.lock().await;
             if let Some(state) = states.get_mut(&user_id) {
-                match interaction.data.custom_id.as_str() {
-                    "dm_fallback_select" => {
-                        if let Some(value) = values.first() {
-                            match value.as_str() {
-                                "dm_fallback_true" => state.dm_fallback_enabled = true,
-                                "dm_fallback_false" => state.dm_fallback_enabled = false,
-                                _ => {}
-                            }
-                        }
-                    }
-                    "pre_start_select" => {
-                        if let Some(value) = values.first() {
-                            match value.as_str() {
-                                "pre_start_5" => state.pre_start_minutes = 5,
-                                "pre_start_15" => state.pre_start_minutes = 15,
-                                "pre_start_30" => state.pre_start_minutes = 30,
-                                _ => {}
-                            }
-                        }
-                    }
-                    "pre_end_select" => {
-                        if let Some(value) = values.first() {
-                            match value.as_str() {
-                                "pre_end_5" => state.pre_end_minutes = 5,
-                                "pre_end_15" => state.pre_end_minutes = 15,
-                                "pre_end_30" => state.pre_end_minutes = 30,
-                                _ => {}
-                            }
-                        }
-                    }
-                    "overdue_select" => {
-                        if let Some(value) = values.first() {
-                            match value.as_str() {
-                                "overdue_6h" => state.overdue_repeat_hours = 6,
-                                "overdue_12h" => state.overdue_repeat_hours = 12,
-                                "overdue_24h" => state.overdue_repeat_hours = 24,
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {
-                        // Handle legacy "notification_preferences" for backwards compatibility
-                        for value in &values {
-                            match value.as_str() {
-                                "dm_fallback_true" => state.dm_fallback_enabled = true,
-                                "dm_fallback_false" => state.dm_fallback_enabled = false,
-                                "pre_start_5" => state.pre_start_minutes = 5,
-                                "pre_start_15" => state.pre_start_minutes = 15,
-                                "pre_start_30" => state.pre_start_minutes = 30,
-                                "pre_end_5" => state.pre_end_minutes = 5,
-                                "pre_end_15" => state.pre_end_minutes = 15,
-                                "pre_end_30" => state.pre_end_minutes = 30,
-                                "overdue_6h" => state.overdue_repeat_hours = 6,
-                                "overdue_12h" => state.overdue_repeat_hours = 12,
-                                "overdue_24h" => state.overdue_repeat_hours = 24,
-                                _ => {}
-                            }
-                        }
+                for value in &values {
+                    match value.as_str() {
+                        "dm_fallback_true" => state.dm_fallback_enabled = true,
+                        "dm_fallback_false" => state.dm_fallback_enabled = false,
+                        "pre_start_5" => state.pre_start_minutes = 5,
+                        "pre_start_15" => state.pre_start_minutes = 15,
+                        "pre_start_30" => state.pre_start_minutes = 30,
+                        "pre_end_5" => state.pre_end_minutes = 5,
+                        "pre_end_15" => state.pre_end_minutes = 15,
+                        "pre_end_30" => state.pre_end_minutes = 30,
+                        "overdue_6h" => state.overdue_repeat_hours = 6,
+                        "overdue_12h" => state.overdue_repeat_hours = 12,
+                        "overdue_24h" => state.overdue_repeat_hours = 24,
+                        _ => {}
                     }
                 }
             }
@@ -681,9 +587,6 @@ impl SetupCommand {
             .color(Colour::BLURPLE);
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new("setup_final_back")
-                .label("⬅️ Back")
-                .style(ButtonStyle::Secondary),
             CreateButton::new("setup_complete")
                 .label("✅ Complete")
                 .style(ButtonStyle::Success),
@@ -864,45 +767,5 @@ impl SetupCommand {
         );
         interaction.create_response(&ctx.http, response).await?;
         Ok(())
-    }
-
-    /// Handle back button from notification preferences step to role selection step
-    pub async fn handle_notification_back(
-        ctx: &Context,
-        interaction: &ComponentInteraction,
-        _db: &SqlitePool,
-    ) -> Result<()> {
-        // Go back to role selection step
-        Self::show_role_selection_step(ctx, interaction, _db).await
-    }
-
-    /// Handle back button from final confirmation step to notification preferences step
-    pub async fn handle_final_back(
-        ctx: &Context,
-        interaction: &ComponentInteraction,
-        db: &SqlitePool,
-    ) -> Result<()> {
-        let user_id = interaction.user.id;
-
-        // Get current state and selected roles
-        let (state, selected_roles) = {
-            let states = SETUP_STATES.lock().await;
-            if let Some(state) = states.get(&user_id) {
-                (state.clone(), state.selected_roles.clone())
-            } else {
-                // State not found, respond with error
-                let response = CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .content("❌ Session expired. Please start setup again.")
-                        .embeds(vec![])
-                        .components(vec![]),
-                );
-                interaction.create_response(&ctx.http, response).await?;
-                return Ok(());
-            }
-        };
-
-        // Go back to notification preferences step
-        Self::show_notification_preferences_step(ctx, interaction, db, &state, &selected_roles).await
     }
 }
