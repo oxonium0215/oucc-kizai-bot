@@ -600,13 +600,26 @@ impl SetupCommand {
             }
         }
 
-        // Acknowledge the selection
-        let response = CreateInteractionResponse::UpdateMessage(
-            CreateInteractionResponseMessage::new()
-                .content("✅ Notification preferences updated. Click **Next** to continue."),
-        );
-        interaction.create_response(&ctx.http, response).await?;
-        Ok(())
+        // Get updated state and refresh the UI to show the new selections
+        let (updated_state, selected_roles) = {
+            let states = SETUP_STATES.lock().await;
+            if let Some(state) = states.get(&user_id) {
+                (state.clone(), state.selected_roles.clone())
+            } else {
+                // State not found, respond with error
+                let response = CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .content("❌ Session expired. Please start setup again.")
+                        .embeds(vec![])
+                        .components(vec![]),
+                );
+                interaction.create_response(&ctx.http, response).await?;
+                return Ok(());
+            }
+        };
+
+        // Always re-render the notification preferences step with updated state
+        Self::show_notification_preferences_step(ctx, interaction, _db, &updated_state, &selected_roles).await
     }
 
     pub async fn handle_notification_next(

@@ -4,7 +4,7 @@ use serenity::all::ComponentInteractionDataKind;
 use serenity::async_trait;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::{SqlitePool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -442,12 +442,18 @@ impl Handler {
             "notification_next" => {
                 SetupCommand::handle_notification_next(ctx, interaction, &self.db).await?
             }
+            "admin_role_select_add" => self.handle_admin_role_select_add(ctx, interaction).await?,
+            "admin_role_select_remove" => self.handle_admin_role_select_remove(ctx, interaction).await?,
             "overall_management" | "overall_mgmt_open" => {
                 self.handle_overall_management(ctx, interaction).await?
             }
             "mgmt_add_tag" => self.handle_add_tag(ctx, interaction).await?,
             "mgmt_add_location" => self.handle_add_location(ctx, interaction).await?,
             "mgmt_add_equipment" => self.handle_add_equipment(ctx, interaction).await?,
+            "mgmt_admin_roles" => self.handle_admin_roles(ctx, interaction).await?,
+            "admin_role_add" => self.handle_admin_role_add(ctx, interaction).await?,
+            "admin_role_remove" => self.handle_admin_role_remove(ctx, interaction).await?,
+            "admin_role_back" => self.handle_admin_role_back(ctx, interaction).await?,
             "mgmt_refresh_display" => self.handle_refresh_display(ctx, interaction).await?,
             _ => {
                 // Check for dynamic reservation and equipment IDs (support both old and new format)
@@ -606,8 +612,8 @@ impl Handler {
                     self.handle_mgmt_export(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("mgmt_jump:") {
                     self.handle_mgmt_jump(ctx, interaction).await?
-                } else if interaction.data.custom_id.starts_with("mgmt_logs_open:") {
-                    self.handle_mgmt_logs_open(ctx, interaction).await?
+                } else if interaction.data.custom_id.starts_with("mgmt_logs_interface:") {
+                    self.handle_mgmt_logs_interface(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("log_filter_time:") {
                     self.handle_log_filter_time(ctx, interaction).await?
                 } else if interaction.data.custom_id.starts_with("log_filter_equipment:") {
@@ -875,19 +881,29 @@ impl Handler {
             None
         };
 
-        // Create action buttons
+        // Create action buttons - first row: core management functions
+        let management_row = CreateActionRow::Buttons(vec![
+            CreateButton::new("mgmt_add_equipment")
+                .label("➕ Add Equipment")
+                .style(ButtonStyle::Success),
+            CreateButton::new("mgmt_add_tag")
+                .label("🏷️ Manage Tags")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_add_location")
+                .label("📍 Manage Locations")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new("mgmt_admin_roles")
+                .label("👥 Set Admin Roles")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        // Create action buttons - second row: utility functions
         let action_row = CreateActionRow::Buttons(vec![
             CreateButton::new(format!("mgmt_refresh:{}", short_session_id))
                 .label("🔄 Refresh Display")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_export:{}", short_session_id))
-                .label("📊 Export CSV")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_jump:{}", short_session_id))
-                .label("🔗 Jump to Equipment")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_logs_open:{}", short_session_id))
-                .label("📋 Operation Logs")
+            CreateButton::new(format!("mgmt_logs_interface:{}", short_session_id))
+                .label("📋 View Logs")
                 .style(ButtonStyle::Secondary),
         ]);
 
@@ -901,7 +917,10 @@ impl Handler {
             components.push(pagination);
         }
 
-        // Finally add main action row
+        // Add management functions row
+        components.push(management_row);
+
+        // Finally add utility action row
         components.push(action_row);
 
         if is_update {
@@ -1041,6 +1060,399 @@ impl Handler {
         Ok(())
     }
 
+    async fn handle_admin_roles(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        self.show_admin_roles(ctx, interaction, false).await
+    }
+
+    async fn show_admin_roles(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        is_update: bool,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Get current admin roles from database
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+        
+        use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
+
+        let mut embed = CreateEmbed::new()
+            .title("👥 Admin Role Management")
+            .description("Manage Discord roles that can use administrative functions.")
+            .color(Colour::BLUE);
+
+        if admin_role_ids.is_empty() {
+            embed = embed.field("Current Admin Roles", "None (only Discord administrators)", false);
+        } else {
+            let role_mentions = admin_role_ids
+                .iter()
+                .map(|&role_id| format!("<@&{}>", role_id))
+                .collect::<Vec<_>>()
+                .join("\n");
+            embed = embed.field("Current Admin Roles", role_mentions, false);
+        }
+
+        embed = embed.field(
+            "Instructions",
+            "• **Add Role**: Select a role to add admin permissions\n• **Remove Role**: Remove admin permissions from a role\n• **Back**: Return to Overall Management",
+            false
+        );
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_add")
+                .label("➕ Add Admin Role")
+                .style(ButtonStyle::Success),
+            CreateButton::new("admin_role_remove")
+                .label("➖ Remove Admin Role")
+                .style(ButtonStyle::Danger),
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back to Management")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = if is_update {
+            serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![buttons]),
+            )
+        } else {
+            serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![buttons])
+                    .ephemeral(true),
+            )
+        };
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_add(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateActionRow, CreateButton, ButtonStyle};
+
+        let role_select = CreateSelectMenu::new(
+            "admin_role_select_add",
+            CreateSelectMenuKind::Role {
+                default_roles: None,
+            },
+        )
+        .placeholder("Select a role to grant admin permissions")
+        .min_values(1)
+        .max_values(1);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("👥 **Add Admin Role**\n\nSelect a role to grant administrative permissions:")
+                .components(vec![
+                    CreateActionRow::SelectMenu(role_select),
+                    buttons,
+                ]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_remove(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        if admin_role_ids.is_empty() {
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ **No Admin Roles to Remove**\n\nThere are currently no admin roles configured.")
+                    .components(vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new("admin_role_back")
+                            .label("⬅️ Back")
+                            .style(ButtonStyle::Secondary),
+                    ])]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, CreateActionRow, CreateButton, ButtonStyle};
+
+        let options: Vec<CreateSelectMenuOption> = admin_role_ids
+            .iter()
+            .map(|&role_id| {
+                CreateSelectMenuOption::new(
+                    format!("Role ID: {}", role_id),
+                    role_id.to_string()
+                )
+            })
+            .collect();
+
+        let role_select = CreateSelectMenu::new(
+            "admin_role_select_remove",
+            CreateSelectMenuKind::String { options },
+        )
+        .placeholder("Select a role to remove admin permissions")
+        .min_values(1)
+        .max_values(1);
+
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new("admin_role_back")
+                .label("⬅️ Back")
+                .style(ButtonStyle::Secondary),
+        ]);
+
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content("👥 **Remove Admin Role**\n\nSelect a role to remove administrative permissions:")
+                .components(vec![
+                    CreateActionRow::SelectMenu(role_select),
+                    buttons,
+                ]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_back(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Return to the overall management dashboard
+        self.show_management_dashboard(ctx, interaction, true).await
+    }
+
+    async fn handle_admin_role_select_add(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract selected role
+        let selected_role = if let ComponentInteractionDataKind::RoleSelect { values } = &interaction.data.kind {
+            if let Some(role_id) = values.first() {
+                role_id.get() as i64
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        };
+
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let mut admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        // Check if role is already added
+        if admin_role_ids.contains(&selected_role) {
+            use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+            let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content(format!("❌ **Role Already Added**\n\n<@&{}> already has admin permissions.", selected_role))
+                    .components(vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new("admin_role_back")
+                            .label("⬅️ Back")
+                            .style(ButtonStyle::Secondary),
+                    ])]),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Add the role
+        admin_role_ids.push(selected_role);
+        let updated_json = serde_json::to_string(&admin_role_ids)?;
+
+        // Update database
+        sqlx::query("UPDATE guilds SET admin_roles = ? WHERE id = ?")
+            .bind(&updated_json)
+            .bind(guild_id)
+            .execute(&self.db)
+            .await?;
+
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(format!("✅ **Admin Role Added**\n\n<@&{}> now has administrative permissions.", selected_role))
+                .components(vec![CreateActionRow::Buttons(vec![
+                    CreateButton::new("admin_role_back")
+                        .label("⬅️ Back to Admin Roles")
+                        .style(ButtonStyle::Secondary),
+                ])]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
+    async fn handle_admin_role_select_remove(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to use this feature.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        let guild_id = interaction.guild_id.unwrap().get() as i64;
+        
+        // Extract selected role
+        let selected_role_str = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+            if let Some(role_str) = values.first() {
+                role_str.clone()
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        };
+
+        let selected_role: i64 = selected_role_str.parse().unwrap_or(0);
+        if selected_role == 0 {
+            return Ok(());
+        }
+
+        // Get current admin roles
+        let current_roles = sqlx::query("SELECT admin_roles FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let admin_roles_json = current_roles
+            .and_then(|r| r.try_get::<Option<String>, _>("admin_roles").unwrap_or(None))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let mut admin_role_ids: Vec<i64> = serde_json::from_str(&admin_roles_json).unwrap_or_default();
+
+        // Remove the role
+        admin_role_ids.retain(|&id| id != selected_role);
+        let updated_json = serde_json::to_string(&admin_role_ids)?;
+
+        // Update database
+        sqlx::query("UPDATE guilds SET admin_roles = ? WHERE id = ?")
+            .bind(&updated_json)
+            .bind(guild_id)
+            .execute(&self.db)
+            .await?;
+
+        use serenity::all::{CreateActionRow, CreateButton, ButtonStyle};
+        let response = serenity::all::CreateInteractionResponse::UpdateMessage(
+            serenity::all::CreateInteractionResponseMessage::new()
+                .content(format!("✅ **Admin Role Removed**\n\n<@&{}> no longer has administrative permissions.", selected_role))
+                .components(vec![CreateActionRow::Buttons(vec![
+                    CreateButton::new("admin_role_back")
+                        .label("⬅️ Back to Admin Roles")
+                        .style(ButtonStyle::Secondary),
+                ])]),
+        );
+        interaction.create_response(&ctx.http, response).await?;
+        Ok(())
+    }
+
     async fn handle_refresh_display(
         &self,
         ctx: &Context,
@@ -1157,12 +1569,19 @@ impl Handler {
         let mut name = String::new();
         let mut sort_order_str = String::new();
 
+        // Debug: Log the raw modal data structure
+        error!("Tag modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 // ActionRowComponent is an enum, match on it properly
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     match input_text.custom_id.as_str() {
-                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "name" => {
+                            name = input_text.value.clone().unwrap_or_default();
+                            error!("Extracted tag name: '{}'", name);
+                        },
                         "sort_order" => {
                             sort_order_str = input_text.value.clone().unwrap_or_default()
                         }
@@ -1171,6 +1590,9 @@ impl Handler {
                 }
             }
         }
+
+        // Final validation log
+        error!("Tag modal validation - name: '{}', sort_order: '{}'", name, sort_order_str);
 
         // Validate inputs
         if name.is_empty() {
@@ -1236,15 +1658,23 @@ impl Handler {
         // Extract data from modal
         let mut name = String::new();
 
+        // Debug: Log the raw modal data structure
+        error!("Modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     if input_text.custom_id == "name" {
                         name = input_text.value.clone().unwrap_or_default();
+                        error!("Extracted name: '{}'", name);
                     }
                 }
             }
         }
+
+        // Final validation log
+        error!("Location modal validation - name: '{}'", name);
 
         // Validate inputs
         if name.is_empty() {
@@ -1298,11 +1728,18 @@ impl Handler {
         let mut tag_name = Option::<String>::None;
         let mut location = Option::<String>::None;
 
+        // Debug: Log the raw modal data structure
+        error!("Equipment modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     match input_text.custom_id.as_str() {
-                        "name" => name = input_text.value.clone().unwrap_or_default(),
+                        "name" => {
+                            name = input_text.value.clone().unwrap_or_default();
+                            error!("Extracted equipment name: '{}'", name);
+                        },
                         "tag_name" => {
                             if let Some(value) = &input_text.value {
                                 if !value.is_empty() {
@@ -1322,6 +1759,9 @@ impl Handler {
                 }
             }
         }
+
+        // Final validation log
+        error!("Equipment modal validation - name: '{}', tag_name: {:?}, location: {:?}", name, tag_name, location);
 
         // Validate inputs
         if name.is_empty() {
@@ -2459,6 +2899,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let embed = CreateEmbed::new()
             .title("📅 Reserve Equipment - Step 1/3")
             .description(format!("**Equipment:** {}\n\n**Step 1:** Please enter the start date and time for your reservation.\n\n⏰ **Format:** YYYY-MM-DD HH:MM (JST)\n📝 **Example:** 2024-01-15 14:30\n\n⚠️ **Note:** Start time must be in the future.", equipment_name))
@@ -2466,10 +2909,10 @@ impl Handler {
             .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_start_input:{}", interaction.token))
+            CreateButton::new(format!("reserve_start_input:{}", short_session_id))
                 .label("📅 Enter Start Time")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2494,6 +2937,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let start_jst = crate::time::utc_to_jst_string(start_time);
 
         let embed = CreateEmbed::new()
@@ -2503,13 +2949,13 @@ impl Handler {
             .footer(serenity::all::CreateEmbedFooter::new("Times are in Japan Standard Time (JST)"));
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_end_input:{}", interaction.token))
+            CreateButton::new(format!("reserve_end_input:{}", short_session_id))
                 .label("📅 Enter End Time")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("reserve_back_start:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_start:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2535,6 +2981,9 @@ impl Handler {
     ) -> Result<()> {
         use serenity::all::{ButtonStyle, Colour, CreateActionRow, CreateButton, CreateEmbed};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let start_jst = crate::time::utc_to_jst_string(start_time);
         let end_jst = crate::time::utc_to_jst_string(end_time);
 
@@ -2545,7 +2994,7 @@ impl Handler {
 
         let mut buttons =
             vec![
-                CreateButton::new(format!("reserve_location_input:{}", interaction.token))
+                CreateButton::new(format!("reserve_location_input:{}", short_session_id))
                     .label("📍 Enter Location")
                     .style(ButtonStyle::Primary),
             ];
@@ -2553,7 +3002,7 @@ impl Handler {
         if let Some(ref default_loc) = default_location {
             if !default_loc.is_empty() {
                 buttons.push(
-                    CreateButton::new(format!("reserve_location_default:{}", interaction.token))
+                    CreateButton::new(format!("reserve_location_default:{}", short_session_id))
                         .label(format!("📍 Use Default ({})", default_loc))
                         .style(ButtonStyle::Secondary),
                 );
@@ -2561,13 +3010,13 @@ impl Handler {
         }
 
         buttons.extend_from_slice(&[
-            CreateButton::new(format!("reserve_location_skip:{}", interaction.token))
+            CreateButton::new(format!("reserve_location_skip:{}", short_session_id))
                 .label("⏭️ Skip Location")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_back_end:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_end:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -2597,8 +3046,12 @@ impl Handler {
         let end_jst = crate::time::utc_to_jst_string(end_time);
         let location_text = location.as_deref().unwrap_or("Not specified");
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         // Check for conflicts in real-time before showing confirmation
-        let state_key = (interaction.user.id, interaction.token.clone());
+        let effective_token = Self::get_effective_token(interaction).await;
+        let state_key = (interaction.user.id, effective_token);
         let equipment_id = {
             let states = RESERVATION_WIZARD_STATES.lock().await;
             states.get(&state_key).map(|s| s.equipment_id).unwrap_or(0)
@@ -2633,10 +3086,10 @@ impl Handler {
                 .color(Colour::RED);
 
             let buttons = CreateActionRow::Buttons(vec![
-                CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+                CreateButton::new(format!("reserve_back_location:{}", short_session_id))
                     .label("⬅️ Back to Times")
                     .style(ButtonStyle::Secondary),
-                CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+                CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                     .label("❌ Cancel")
                     .style(ButtonStyle::Danger),
             ]);
@@ -2657,13 +3110,13 @@ impl Handler {
             .color(Colour::DARK_GREEN);
 
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("reserve_confirm:{}", interaction.token))
+            CreateButton::new(format!("reserve_confirm:{}", short_session_id))
                 .label("✅ Confirm Reservation")
                 .style(ButtonStyle::Success),
-            CreateButton::new(format!("reserve_back_location:{}", interaction.token))
+            CreateButton::new(format!("reserve_back_location:{}", short_session_id))
                 .label("⬅️ Back")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("reserve_cancel:{}", interaction.token))
+            CreateButton::new(format!("reserve_cancel:{}", short_session_id))
                 .label("❌ Cancel")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6036,20 +6489,23 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_time_today:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_today:{}", short_session_id))
                 .label("📅 Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_24h:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_24h:{}", short_session_id))
                 .label("🕐 Next 24h")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_7d:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_7d:{}", short_session_id))
                 .label("📊 Next 7 days")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_time_custom:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_custom:{}", short_session_id))
                 .label("⚙️ Custom")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("mgmt_time_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_time_all:{}", short_session_id))
                 .label("🌐 All Time")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6081,17 +6537,20 @@ impl Handler {
 
         use serenity::all::{ButtonStyle, CreateActionRow, CreateButton};
 
+        // Use short session ID to avoid Discord's 100-character custom_id limit
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
+
         let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("mgmt_status_active:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_active:{}", short_session_id))
                 .label("🟢 Active")
                 .style(ButtonStyle::Success),
-            CreateButton::new(format!("mgmt_status_upcoming:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_upcoming:{}", short_session_id))
                 .label("🟡 Upcoming")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_returned:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_returned:{}", short_session_id))
                 .label("🔄 Returned Today")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("mgmt_status_all:{}", interaction.token))
+            CreateButton::new(format!("mgmt_status_all:{}", short_session_id))
                 .label("📊 All Status")
                 .style(ButtonStyle::Primary),
         ]);
@@ -6734,6 +7193,38 @@ impl Handler {
     }
 
     /// Handle opening operation log viewer
+    async fn handle_mgmt_logs_interface(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+    ) -> Result<()> {
+        // Check admin permissions
+        if !utils::is_admin(ctx, interaction.guild_id.unwrap(), interaction.user.id).await? {
+            let response = serenity::all::CreateInteractionResponse::Message(
+                serenity::all::CreateInteractionResponseMessage::new()
+                    .content("❌ You need administrator permissions to view operation logs.")
+                    .ephemeral(true),
+            );
+            interaction.create_response(&ctx.http, response).await?;
+            return Ok(());
+        }
+
+        // Initialize log viewer state for this user session
+        let state_key = (
+            interaction.guild_id.unwrap(),
+            interaction.user.id,
+            interaction.token.clone(),
+        );
+        {
+            let mut states = LOG_VIEWER_STATES.lock().await;
+            states.insert(state_key.clone(), LogViewerState::default());
+        }
+
+        // Show the operation log viewer interface
+        self.show_operation_log_viewer(ctx, interaction, false)
+            .await
+    }
+
     async fn handle_mgmt_logs_open(
         &self,
         ctx: &Context,
@@ -6870,18 +7361,19 @@ impl Handler {
             embed = embed.field("📋 Log Entries", "No log entries found for the current filters.", false);
         }
 
-        // Create filter controls
+        // Create filter controls using short session ID
+        let short_session_id = Self::get_or_create_short_session_id(&interaction.token).await;
         let filter_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("log_filter_time:{}", interaction.token))
+            CreateButton::new(format!("log_filter_time:{}", short_session_id))
                 .label("📅 Time Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_filter_equipment:{}", interaction.token))
+            CreateButton::new(format!("log_filter_equipment:{}", short_session_id))
                 .label("🔧 Equipment Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_filter_action:{}", interaction.token))
+            CreateButton::new(format!("log_filter_action:{}", short_session_id))
                 .label("⚡ Action Filter")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_clear_filters:{}", interaction.token))
+            CreateButton::new(format!("log_clear_filters:{}", short_session_id))
                 .label("🗑️ Clear All")
                 .style(ButtonStyle::Danger),
         ]);
@@ -6890,14 +7382,14 @@ impl Handler {
         let mut pagination_buttons = vec![];
         if state.page > 0 {
             pagination_buttons.push(
-                CreateButton::new(format!("log_page_prev:{}", interaction.token))
+                CreateButton::new(format!("log_page_prev:{}", short_session_id))
                     .label("⬅️ Previous")
                     .style(ButtonStyle::Secondary),
             );
         }
         if end_idx < total_count {
             pagination_buttons.push(
-                CreateButton::new(format!("log_page_next:{}", interaction.token))
+                CreateButton::new(format!("log_page_next:{}", short_session_id))
                     .label("➡️ Next")
                     .style(ButtonStyle::Secondary),
             );
@@ -6911,13 +7403,13 @@ impl Handler {
 
         // Create action buttons
         let action_row = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("log_refresh:{}", interaction.token))
+            CreateButton::new(format!("log_refresh:{}", short_session_id))
                 .label("🔄 Refresh")
                 .style(ButtonStyle::Primary),
-            CreateButton::new(format!("log_export:{}", interaction.token))
+            CreateButton::new(format!("log_export:{}", short_session_id))
                 .label("📊 Export CSV")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("log_back_mgmt:{}", interaction.token))
+            CreateButton::new(format!("log_back_mgmt:{}", short_session_id))
                 .label("⬅️ Back to Management")
                 .style(ButtonStyle::Secondary),
         ]);
