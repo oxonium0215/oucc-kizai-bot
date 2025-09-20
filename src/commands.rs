@@ -379,9 +379,6 @@ impl SetupCommand {
         state: &SetupWizardState,
         selected_roles: &[RoleId],
     ) -> Result<()> {
-        // Debug logging to understand state values
-        error!("Setup state debug - pre_start: {}, pre_end: {}, overdue: {}, dm_fallback: {}", 
-               state.pre_start_minutes, state.pre_end_minutes, state.overdue_repeat_hours, state.dm_fallback_enabled);
         // Update state with selected roles and initialize notification preferences
         {
             let mut states = SETUP_STATES.lock().await;
@@ -621,13 +618,8 @@ impl SetupCommand {
             }
         };
 
-        // Acknowledge the selection with a simple response instead of re-rendering
-        let response = CreateInteractionResponse::UpdateMessage(
-            CreateInteractionResponseMessage::new()
-                .content("✅ Notification preferences updated. Click **Next** to continue or modify other settings."),
-        );
-        interaction.create_response(&ctx.http, response).await?;
-        Ok(())
+        // Always re-render the notification preferences step with updated state
+        Self::show_notification_preferences_step(ctx, interaction, _db, &updated_state, &selected_roles).await
     }
 
     pub async fn handle_notification_next(

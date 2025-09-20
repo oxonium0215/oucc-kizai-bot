@@ -1569,16 +1569,18 @@ impl Handler {
         let mut name = String::new();
         let mut sort_order_str = String::new();
 
+        // Debug: Log the raw modal data structure
+        error!("Tag modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 // ActionRowComponent is an enum, match on it properly
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     match input_text.custom_id.as_str() {
                         "name" => {
                             name = input_text.value.clone().unwrap_or_default();
-                            if name.is_empty() {
-                                error!("Tag name field is empty or None. Value field: {:?}", input_text.value);
-                            }
+                            error!("Extracted tag name: '{}'", name);
                         },
                         "sort_order" => {
                             sort_order_str = input_text.value.clone().unwrap_or_default()
@@ -1589,7 +1591,7 @@ impl Handler {
             }
         }
 
-        // Debug logging for validation
+        // Final validation log
         error!("Tag modal validation - name: '{}', sort_order: '{}'", name, sort_order_str);
 
         // Validate inputs
@@ -1656,20 +1658,22 @@ impl Handler {
         // Extract data from modal
         let mut name = String::new();
 
+        // Debug: Log the raw modal data structure
+        error!("Modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     if input_text.custom_id == "name" {
                         name = input_text.value.clone().unwrap_or_default();
-                        if name.is_empty() {
-                            error!("Location name field is empty or None. Value field: {:?}", input_text.value);
-                        }
+                        error!("Extracted name: '{}'", name);
                     }
                 }
             }
         }
 
-        // Debug logging for validation
+        // Final validation log
         error!("Location modal validation - name: '{}'", name);
 
         // Validate inputs
@@ -1724,16 +1728,17 @@ impl Handler {
         let mut tag_name = Option::<String>::None;
         let mut location = Option::<String>::None;
 
+        // Debug: Log the raw modal data structure
+        error!("Equipment modal data structure: {:?}", interaction.data);
+
         for row in &interaction.data.components {
             for component in &row.components {
                 if let serenity::all::ActionRowComponent::InputText(input_text) = component {
+                    error!("Found input field - custom_id: '{}', value: {:?}", input_text.custom_id, input_text.value);
                     match input_text.custom_id.as_str() {
                         "name" => {
                             name = input_text.value.clone().unwrap_or_default();
-                            if name.is_empty() {
-                                // Check if value field is None
-                                error!("Equipment name field is empty or None. Value field: {:?}", input_text.value);
-                            }
+                            error!("Extracted equipment name: '{}'", name);
                         },
                         "tag_name" => {
                             if let Some(value) = &input_text.value {
@@ -1755,7 +1760,7 @@ impl Handler {
             }
         }
 
-        // Debug logging for validation
+        // Final validation log
         error!("Equipment modal validation - name: '{}', tag_name: {:?}, location: {:?}", name, tag_name, location);
 
         // Validate inputs
